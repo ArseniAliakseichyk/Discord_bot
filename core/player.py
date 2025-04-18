@@ -13,26 +13,40 @@ logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=2)
 
 def prepare_audio(query, is_local):
-    logger.info(f"Preparing audio for query: {query}, is_local={is_local}")
-    if is_local:
-        return discord.FFmpegPCMAudio(
-            executable="ffmpeg",
-            source=query,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn -b:a 128k"
-        )
-    else:
-        info = fetch_info_sync(query)
-        audio_url = info.get('url') if 'entries' not in info else info['entries'][0].get('url')
-        if not audio_url:
-            raise ValueError(f"No audio URL found for query: {query}")
-        logger.info(f"Using audio URL: {audio_url}")
-        return discord.FFmpegPCMAudio(
-            executable="ffmpeg",
-            source=audio_url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn -b:a 128k"
-        )
+    logger.info(f"Preparing audio: {query}")
+    try:
+        if is_local:
+            return discord.FFmpegPCMAudio(
+                executable="ffmpeg",
+                source=query,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn -b:a 128k"
+            )
+        else:
+            if 'playlist?list=' in query:
+                raise ValueError("Playlist URL should not be used directly")
+                
+            info = fetch_info_sync(query)
+            if not info:
+                raise ValueError("Failed to fetch audio info")
+                
+            audio_url = info.get('url')
+            if not audio_url:
+                raise ValueError("No audio URL in response")
+                
+            logger.info(f"Using audio URL: {audio_url[:50]}...")
+            return discord.FFmpegPCMAudio(
+                executable="ffmpeg",
+                source=audio_url,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn -b:a 128k"
+            )
+    except Exception as e:
+        logger.error(f"Full preparation error: {str(e)}")
+        raise AudioPreparationError(f"Ошибка подготовки аудио: {str(e)}")
+
+class AudioPreparationError(Exception):
+    pass
 
 async def play_next(vc, text_channel: discord.TextChannel):
     if state.looping and state.current:

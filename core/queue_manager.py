@@ -5,11 +5,45 @@ from core import state
 from utils.yt_utils import fetch_info
 from config import settings
 from core.player import play_next
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-MAX_PLAYLIST_SIZE = 50
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+async def process_queue_item(query, interaction, vc):
+    try:
+        local_path = os.path.join(settings.MUSIC_FOLDER, query)
+        
+        if os.path.exists(local_path):
+            track = {'query': local_path, 'title': os.path.basename(query)}
+            state.queue.append(track)
+            await interaction.followup.send(f"🎵 Добавлен локальный файл: `{os.path.basename(query)}`")
+            return
+
+        info = await fetch_info(query)
+        
+        if not info or not info.get('url'):
+            raise ValueError("Не удалось получить аудио URL")
+
+        track = {
+            'query': info['url'],
+            'title': info.get('title', 'Без названия')
+        }
+        
+        state.queue.append(track)
+        await interaction.followup.send(f"🎵 Добавлен трек: `{track['title']}`")
+
+        if vc and not vc.is_playing() and not vc.is_paused():
+            await play_next(vc, interaction.channel)
+
+    except Exception as e:
+        error_msg = str(e)
+        if "Плейлисты не поддерживаются" in error_msg:
+            error_msg = "⚠️ Плейлисты отключены"
+        logger.error(f"Ошибка обработки: {error_msg}")
+        await interaction.followup.send(f"❌ {error_msg}")
+        raise
 
 async def process_queue_requests(bot):
     queue = asyncio.Queue()
@@ -18,41 +52,7 @@ async def process_queue_requests(bot):
         while True:
             query, interaction, vc = await queue.get()
             try:
-                logger.info(f"Processing query: {query}")
-                local_path = os.path.join(settings.MUSIC_FOLDER, query)
-                if os.path.exists(local_path):
-                    track = {'query': local_path, 'title': query}
-                    state.queue.append(track)
-                    logger.info(f"Added local track to queue: {track}")
-                    await interaction.followup.send(f"🎵 Добавлен в очередь: `{query}`")
-                else:
-                    info = await fetch_info(query)
-                    if 'entries' in info:
-                        entries = info['entries'][:MAX_PLAYLIST_SIZE]
-                        for entry in entries:
-                            track_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
-                            track_title = entry.get('title', 'Unknown Title')
-                            if track_url:
-                                state.queue.append({'query': track_url, 'title': track_title})
-                                logger.info(f"Added playlist track to queue: {track_title} ({track_url})")
-                            else:
-                                logger.warning(f"Skipping playlist entry due to missing URL: {entry}")
-                        await interaction.followup.send(f"🎵 Добавлено треков: {len(entries)} (ограничено {MAX_PLAYLIST_SIZE})")
-                    else:
-                        track = {'query': query, 'title': info.get('title', 'Unknown Title')}
-                        state.queue.append(track)
-                        logger.info(f"Added single track to queue: {track}")
-                        await interaction.followup.send(f"🎵 Добавлен в очередь: `{info.get('title', 'Unknown Title')}`")
-
-                logger.info(f"Current queue: {[track['title'] for track in state.queue]}")
-                if vc and not vc.is_playing() and not vc.is_paused():
-                    logger.info(f"Voice client state: playing={vc.is_playing()}, paused={vc.is_paused()}")
-                    await play_next(vc, interaction.channel)
-                else:
-                    logger.warning("Voice client is not ready or already playing/paused")
-            except Exception as e:
-                logger.error(f"Error processing queue item: {str(e)}", exc_info=True)
-                await interaction.followup.send(f"⚠️ Ошибка: {str(e)}")
+                await process_queue_item(query, interaction, vc)
             finally:
                 queue.task_done()
 
