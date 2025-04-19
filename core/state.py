@@ -1,3 +1,6 @@
+from asyncio import Lock
+
 queue = []
-looping = False
+queue_lock = Lock()
 current = None
+looping = False
