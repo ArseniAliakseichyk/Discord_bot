@@ -66,11 +66,15 @@ async def announce(
 @announce.autocomplete("mention_role")
 async def role_autocomplete(interaction: discord.Interaction, current: str):
     try:
-        allowed_roles = settings.ANNOUNCE["ALLOWED_ROLES"]
+        allowed_roles = list(map(int, os.getenv("ALLOWED_ROLES").split(','))) if os.getenv("ALLOWED_ROLES") else []
+        
         return [
-            app_commands.Choice(name=f"{role.name} (ID: {role.id})", value=str(role.id))
+            app_commands.Choice(
+                name=f"{role.name} {'✅' if role.id in allowed_roles else ''}",
+                value=str(role.id)
+            )
             for role in interaction.guild.roles
-            if role.id in allowed_roles and current.lower() in role.name.lower()
+            if current.lower() in role.name.lower()
         ][:25]
-    except:
+    except Exception as e:
         return []
