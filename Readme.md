@@ -31,6 +31,8 @@ This repository is a simple Discord music bot that allows users to play music fr
 3. Create a `.env` file in the root directory with your bot's token:
     ```
     DISCORD_TOKEN=your-discord-bot-token
+    ALLOWED_ROLES=admin-role-id,moderator-role-id
+    DEFAULT_CHANNEL=announcements-channel-id
     ```
 
 4. Run the bot:
