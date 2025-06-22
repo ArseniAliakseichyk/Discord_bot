@@ -10,15 +10,35 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+def format_duration(seconds: int) -> str:
+    """Форматирует длительность в секундах в формат MM:SS или HH:MM:SS"""
+    if seconds <= 0:
+        return "00:00"
+    
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def process_queue_item(query, interaction, vc):
     try:
         local_path = os.path.join(settings.MUSIC_FOLDER, query)
+        user_display = interaction.user.display_name
+        user_avatar = interaction.user.display_avatar.url
         
         if os.path.exists(local_path):
-            track = {'query': local_path, 'title': os.path.basename(query)}
+            track = {
+                'query': local_path,
+                'title': os.path.basename(query),
+                'source': 'local',
+                'requested_by_name': user_display,
+                'requested_by_avatar': user_avatar
+            }
             state.queue.append(track)
-            await interaction.followup.send(f"🎵 Добавлен локальный файл: `{os.path.basename(query)}`")
+            await interaction.followup.send(f"🎵 Добавлен локальный файл: `{track['title']}`")
             return
 
         info = await fetch_info(query)
@@ -26,9 +46,19 @@ async def process_queue_item(query, interaction, vc):
         if not info or not info.get('url'):
             raise ValueError("Не удалось получить аудио URL")
 
+        duration_seconds = info.get('duration', 0)
+        duration_str = format_duration(duration_seconds)
+        
         track = {
             'query': info['url'],
-            'title': info.get('title', 'Без названия')
+            'title': info.get('title', 'Без названия'),
+            'web_url': info.get('webpage_url', 'https://youtube.com'),
+            'thumbnail': info.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png'),
+            'duration': duration_str,
+            'duration_seconds': duration_seconds,
+            'source': 'youtube',
+            'requested_by_name': user_display,
+            'requested_by_avatar': user_avatar
         }
         
         state.queue.append(track)

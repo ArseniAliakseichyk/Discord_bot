@@ -9,7 +9,7 @@ from core.queue_manager import process_queue_requests
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-bot = commands.Bot(command_prefix='//', intents=settings.INTENTS)
+bot = commands.Bot(command_prefix='/', intents=settings.INTENTS)
 
 @bot.event
 async def on_ready():

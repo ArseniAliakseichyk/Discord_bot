@@ -2,6 +2,7 @@ import discord
 import asyncio
 import os
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from core import state
 from utils.yt_utils import fetch_info_sync
@@ -50,11 +51,16 @@ class AudioPreparationError(Exception):
 
 async def play_next(vc, text_channel: discord.TextChannel):
     if state.looping and state.current:
+        state.current = state.queue.pop(0)
+        state.current_start_time = time.time()
+        state.elapsed_at_pause = None
         state.queue.insert(0, state.current)
         logger.info(f"Looping enabled, re-inserted current track: {state.current['title']}")
 
     if state.queue:
         state.current = state.queue.pop(0)
+        state.current_start_time = time.time()
+        state.elapsed_at_pause = None
         query = state.current['query']
         is_local = os.path.exists(query)
         logger.info(f"Playing next track: {state.current['title']} (query: {query})")
@@ -82,11 +88,58 @@ async def play_next(vc, text_channel: discord.TextChannel):
                 logger.error(f"Error in after_playing: {e}", exc_info=True)
 
         vc.play(source, after=after_playing)
-        await text_channel.send(
-            f"▶️ Сейчас играет: `{state.current['title']}`",
-            view=ControlButtons(text_channel)
+        
+        embed = discord.Embed(
+            title="🎵 Сейчас играет",
+            description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
+            color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.blue()
         )
+        
+        thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
+        embed.set_thumbnail(url=thumbnail)
+        
+        embed.add_field(
+            name="Длительность", 
+            value=state.current.get('duration', 'N/A'),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Источник", 
+            value="Локальный файл" if state.current.get('source') == 'local' else "YouTube",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Статус", 
+            value="🔁 Повтор" if state.looping else "▶️ Воспроизведение",
+            inline=True
+        )
+        
+        requested_by = state.current.get('requested_by_name', 'Неизвестно')
+        avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
+        
+        embed.set_footer(
+            text=f"Добавлено: {requested_by}",
+            icon_url=avatar_url
+        )
+
+        if state.last_now_playing_message:
+            try:
+                await state.last_now_playing_message.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            state.last_now_playing_message = None
+        
+        state.last_now_playing_message = await text_channel.send(embed=embed, view=ControlButtons(text_channel))
+        
         logger.info(f"Started playback for: {state.current['title']}")
     else:
-        state.current = None
+        state.reset_playback_state()
+        if state.last_now_playing_message:
+            try:
+                await state.last_now_playing_message.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            state.last_now_playing_message = None
         logger.info("Queue is empty, stopping playback")
