@@ -8,6 +8,12 @@ async def leave(interaction: discord.Interaction):
     if vc:
         await vc.disconnect()
         state.queue.clear()
+        if state.last_now_playing_message:
+            try:
+                await state.last_now_playing_message.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            state.last_now_playing_message = None
         await interaction.response.send_message("👋 Отключился и очистил очередь.")
     else:
         await interaction.response.send_message("❌ Бот не в голосовом канале.")
