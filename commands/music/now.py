@@ -74,4 +74,4 @@ async def now_playing(interaction: discord.Interaction):
 
     embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)

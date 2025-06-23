@@ -1,4 +1,5 @@
 import discord
+from core import state
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
@@ -19,8 +20,25 @@ async def on_ready():
         await register_commands(bot)
         synced = await bot.tree.sync()
         print(f"📡 Synced {len(synced)} slash commands")
+        for guild in bot.guilds:
+            me = guild.me
+            if not me.guild_permissions.manage_messages:
+                channel = guild.system_channel or discord.utils.get(guild.text_channels, position=0)
+                if channel:
+                    await channel.send("⚠️ У бота нет прав 'Управление сообщениями'. Это может привести к накоплению сообщений 'Сейчас играет'.")
     except Exception as e:
         print(f"Error syncing commands: {e}")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.id == bot.user.id and before.channel and not after.channel:
+        if state.last_now_playing_message:
+            try:
+                await state.last_now_playing_message.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            state.last_now_playing_message = None
+        state.reset_playback_state()
 
 if __name__ == "__main__":
     bot.run(TOKEN)
