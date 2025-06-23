@@ -81,13 +81,14 @@ async def play_next(vc, text_channel: discord.TextChannel):
 
             source = discord.PCMVolumeTransformer(source, volume=0.5)
 
-            def after_playing(error):
+            async def after_playing(error):
                 if error:
                     logger.error(f"Playback error: {error}", exc_info=True)
                 if vc and vc.source:
                     vc.source.cleanup()
                 if state.looping and state.current:
-                    state.queue.insert(0, state.current)
+                    async with state.queue_lock:
+                        state.queue.insert(0, state.current)
                 future = asyncio.run_coroutine_threadsafe(play_next(vc, text_channel), vc.loop)
                 try:
                     future.result()
@@ -138,11 +139,7 @@ async def play_next(vc, text_channel: discord.TextChannel):
                     pass
                 state.last_now_playing_message = None
             
-            is_playing = True
-            has_next = len(state.queue) > 0
-            is_looping = state.looping
-            view = ControlButtons(text_channel, is_playing, has_next, is_looping)
-            state.last_now_playing_message = await text_channel.send(embed=embed, view=view)
+            state.last_now_playing_message = await text_channel.send(embed=embed, view=ControlButtons(text_channel))
             
             logger.info(f"Started playback for: {state.current['title']}")
         else:
