@@ -2,6 +2,7 @@ import discord
 import asyncio
 import os
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from core import state
 from utils.yt_utils import fetch_info_sync
@@ -49,44 +50,93 @@ class AudioPreparationError(Exception):
     pass
 
 async def play_next(vc, text_channel: discord.TextChannel):
-    if state.looping and state.current:
-        state.queue.insert(0, state.current)
-        logger.info(f"Looping enabled, re-inserted current track: {state.current['title']}")
-
-    if state.queue:
-        state.current = state.queue.pop(0)
-        query = state.current['query']
-        is_local = os.path.exists(query)
-        logger.info(f"Playing next track: {state.current['title']} (query: {query})")
-
-        try:
-            loop = asyncio.get_running_loop()
-            source = await loop.run_in_executor(executor, prepare_audio, query, is_local)
-        except Exception as e:
-            logger.error(f"Error preparing audio: {str(e)}", exc_info=True)
-            await text_channel.send(f"⚠️ Ошибка воспроизведения: {str(e)}")
-            await play_next(vc, text_channel)
+    async with state.queue_lock:
+        if not vc or not vc.is_connected():
+            state.reset_playback_state()
+            if state.last_now_playing_message:
+                try:
+                    await state.last_now_playing_message.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                state.last_now_playing_message = None
+            logger.info("Bot is not in a voice channel, stopping playback")
             return
 
-        source = discord.PCMVolumeTransformer(source, volume=0.5)
+        if state.queue:
+            state.current = state.queue.pop(0)
+            state.current_start_time = time.time()
+            state.elapsed_at_pause = None
+            query = state.current['query']
+            is_local = os.path.exists(query)
+            logger.info(f"Playing next track: {state.current['title']} (query: {query})")
 
-        def after_playing(error):
-            if error:
-                logger.error(f"Playback error: {error}", exc_info=True)
-            if vc and vc.source:
-                vc.source.cleanup()
-            future = asyncio.run_coroutine_threadsafe(play_next(vc, text_channel), vc.loop)
             try:
-                future.result()
+                loop = asyncio.get_running_loop()
+                source = await loop.run_in_executor(executor, prepare_audio, query, is_local)
             except Exception as e:
-                logger.error(f"Error in after_playing: {e}", exc_info=True)
+                logger.error(f"Error preparing audio: {str(e)}", exc_info=True)
+                await text_channel.send(f"⚠️ Ошибка воспроизведения трека `{state.current['title']}`: {str(e)}")
+                await play_next(vc, text_channel)
+                return
 
-        vc.play(source, after=after_playing)
-        await text_channel.send(
-            f"▶️ Сейчас играет: `{state.current['title']}`",
-            view=ControlButtons(text_channel)
-        )
-        logger.info(f"Started playback for: {state.current['title']}")
-    else:
-        state.current = None
-        logger.info("Queue is empty, stopping playback")
+            source = discord.PCMVolumeTransformer(source, volume=0.5)
+
+            if vc.is_playing() or vc.is_paused():
+                vc.stop()
+
+            async def after_playing(error):
+                if error:
+                    logger.error(f"Playback error: {error}", exc_info=True)
+                if vc and vc.source:
+                    vc.source.cleanup()
+                if state.looping and state.current and not state.is_manual_operation:
+                    async with state.queue_lock:
+                        state.queue.insert(0, state.current)
+                state.is_manual_operation = False
+                await play_next(vc, text_channel)
+
+            def after_playing_sync(error):
+                asyncio.run_coroutine_threadsafe(after_playing(error), vc.loop)
+
+            vc.play(source, after=after_playing_sync)
+            
+            embed = discord.Embed(
+                title="🎵 Сейчас играет",
+                description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
+                color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
+            )
+            
+            thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
+            embed.set_thumbnail(url=thumbnail)
+            
+            embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
+            embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
+            embed.add_field(name="Статус", value="🔁 Повтор" if state.looping else "▶️ Воспроизведение", inline=True)
+            
+            requested_by = state.current.get('requested_by_name', 'Неизвестно')
+            avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
+            embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
+
+            if state.last_now_playing_message:
+                try:
+                    await state.last_now_playing_message.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                state.last_now_playing_message = None
+            
+            state.last_now_playing_message = await text_channel.send(
+                embed=embed, 
+                view=ControlButtons(text_channel, play_next)
+            )
+            
+            logger.info(f"Started playback for: {state.current['title']}")
+        else:
+            msg_to_delete = state.last_now_playing_message
+            state.reset_playback_state()
+        
+            if msg_to_delete:
+                try:
+                    await msg_to_delete.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+            logger.info("Queue is empty, stopping playback")
