@@ -92,7 +92,7 @@ async def play_next(vc, text_channel: discord.TextChannel):
         embed = discord.Embed(
             title="🎵 Сейчас играет",
             description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-            color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.blue()
+            color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
         )
         
         thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
