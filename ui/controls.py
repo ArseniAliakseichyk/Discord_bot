@@ -2,11 +2,13 @@ import discord
 from discord import ui
 from core import state
 import time
+import asyncio
 
 class ControlButtons(discord.ui.View):
-    def __init__(self, text_channel: discord.TextChannel):
+    def __init__(self, text_channel: discord.TextChannel, play_next_func):
         super().__init__(timeout=None)
         self.text_channel = text_channel
+        self.play_next = play_next_func
 
         vc = text_channel.guild.voice_client
         is_playing = vc and vc.is_playing()
@@ -69,7 +71,7 @@ class ControlButtons(discord.ui.View):
             icon_url=avatar_url
         )
 
-        new_view = ControlButtons(self.text_channel)
+        new_view = ControlButtons(self.text_channel, self.play_next)
         await state.last_now_playing_message.edit(embed=embed, view=new_view)
 
     @discord.ui.button(label="⏸️ Пауза", style=discord.ButtonStyle.secondary)
@@ -80,7 +82,6 @@ class ControlButtons(discord.ui.View):
         if vc and vc.is_playing():
             vc.pause()
             state.elapsed_at_pause = time.time() - state.current_start_time
-            await self.text_channel.send("⏸️ Музыка на паузе.")
             await self.update_embed(interaction)
 
     @discord.ui.button(label="▶️ Продолжить", style=discord.ButtonStyle.secondary)
@@ -93,7 +94,6 @@ class ControlButtons(discord.ui.View):
             if state.elapsed_at_pause is not None:
                 state.current_start_time = time.time() - state.elapsed_at_pause
                 state.elapsed_at_pause = None
-            await self.text_channel.send("▶️ Музыка продолжена.")
             await self.update_embed(interaction)
 
     @discord.ui.button(label="⏭️ Скип", style=discord.ButtonStyle.secondary)
@@ -103,7 +103,6 @@ class ControlButtons(discord.ui.View):
         vc = interaction.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-            await self.text_channel.send(f"⏭️ Трек `{state.current['title']}` пропущен.")
 
     @discord.ui.button(label="⏹️ Стоп", style=discord.ButtonStyle.secondary)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -121,12 +120,9 @@ class ControlButtons(discord.ui.View):
                 state.last_now_playing_message = None
             await self.text_channel.send("⏹️ Воспроизведение остановлено и очередь очищена.")
 
-    @discord.ui.button(label="🔄 Повтор", style=discord.ButtonStyle.secondary)
-    async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        state.is_manual_operation = True
-        state.looping = not state.looping
-        await self.text_channel.send(
-            f"🔄 Режим повтора: {'ВКЛ' if state.looping else 'ВЫКЛ'}"
-        )
-        await self.update_embed(interaction)
+    # @discord.ui.button(label="🔄 Повтор", style=discord.ButtonStyle.secondary)
+    # async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
+    #     await interaction.response.defer()
+    #     state.is_manual_operation = True
+    #     state.looping = not state.looping
+    #     await self.update_embed(interaction)

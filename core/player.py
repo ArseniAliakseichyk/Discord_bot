@@ -81,21 +81,24 @@ async def play_next(vc, text_channel: discord.TextChannel):
 
             source = discord.PCMVolumeTransformer(source, volume=0.5)
 
+            if vc.is_playing() or vc.is_paused():
+                vc.stop()
+
             async def after_playing(error):
                 if error:
                     logger.error(f"Playback error: {error}", exc_info=True)
                 if vc and vc.source:
                     vc.source.cleanup()
-                if state.looping and state.current:
+                if state.looping and state.current and not state.is_manual_operation:
                     async with state.queue_lock:
                         state.queue.insert(0, state.current)
-                future = asyncio.run_coroutine_threadsafe(play_next(vc, text_channel), vc.loop)
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"Error in after_playing: {e}", exc_info=True)
+                state.is_manual_operation = False
+                await play_next(vc, text_channel)
 
-            vc.play(source, after=after_playing)
+            def after_playing_sync(error):
+                asyncio.run_coroutine_threadsafe(after_playing(error), vc.loop)
+
+            vc.play(source, after=after_playing_sync)
             
             embed = discord.Embed(
                 title="🎵 Сейчас играет",
@@ -106,31 +109,13 @@ async def play_next(vc, text_channel: discord.TextChannel):
             thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
             embed.set_thumbnail(url=thumbnail)
             
-            embed.add_field(
-                name="Длительность", 
-                value=state.current.get('duration', 'N/A'),
-                inline=True
-            )
-            
-            embed.add_field(
-                name="Источник", 
-                value="Локальный файл" if state.current.get('source') == 'local' else "YouTube",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="Статус", 
-                value="🔁 Повтор" if state.looping else "▶️ Воспроизведение",
-                inline=True
-            )
+            embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
+            embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
+            embed.add_field(name="Статус", value="🔁 Повтор" if state.looping else "▶️ Воспроизведение", inline=True)
             
             requested_by = state.current.get('requested_by_name', 'Неизвестно')
             avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
-            
-            embed.set_footer(
-                text=f"Добавлено: {requested_by}",
-                icon_url=avatar_url
-            )
+            embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
 
             if state.last_now_playing_message:
                 try:
@@ -139,15 +124,19 @@ async def play_next(vc, text_channel: discord.TextChannel):
                     pass
                 state.last_now_playing_message = None
             
-            state.last_now_playing_message = await text_channel.send(embed=embed, view=ControlButtons(text_channel))
+            state.last_now_playing_message = await text_channel.send(
+                embed=embed, 
+                view=ControlButtons(text_channel, play_next)
+            )
             
             logger.info(f"Started playback for: {state.current['title']}")
         else:
+            msg_to_delete = state.last_now_playing_message
             state.reset_playback_state()
-            if state.last_now_playing_message:
+        
+            if msg_to_delete:
                 try:
-                    await state.last_now_playing_message.delete()
+                    await msg_to_delete.delete()
                 except (discord.NotFound, discord.HTTPException):
                     pass
-                state.last_now_playing_message = None
             logger.info("Queue is empty, stopping playback")
