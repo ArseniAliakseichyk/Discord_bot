@@ -2,7 +2,7 @@ import asyncio
 import os
 import logging
 from core import state
-from utils.yt_utils import fetch_info
+from utils.yt_utils import fetch_info, AgeRestrictedError
 from config import settings
 from core.player import play_next
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -40,11 +40,15 @@ async def process_queue_item(query, interaction, vc):
                 'requested_by_avatar': user_avatar
             }
         else:
-            info = await fetch_info(query)
+            if query.startswith("http://") or query.startswith("https://"):
+                info = await fetch_info(query, is_search=False)
+            else:
+                search_query = "ytsearch:" + query
+                info = await fetch_info(search_query, is_search=True)
             
             if not info or not info.get('url'):
                 raise ValueError("Не удалось получить аудио URL")
-        
+            
             duration_seconds = info.get('duration', 0)
             duration_str = format_duration(duration_seconds)
             
@@ -121,13 +125,17 @@ async def process_queue_item(query, interaction, vc):
         if vc and not vc.is_playing() and not vc.is_paused() and state.current is None:
             await play_next(vc, interaction.channel)
         
+    except AgeRestrictedError as e:
+        await interaction.followup.send("⚠️ Видео недоступно из-за возрастных ограничений.")
+        logger.error(f"Ошибка обработки: {str(e)}")
+    except ValueError as e:
+        error_msg = str(e)
+        await interaction.followup.send(f"⚠️ {error_msg}")
+        logger.error(f"Ошибка обработки: {error_msg}")
     except Exception as e:
         error_msg = str(e)
-        if "Плейлисты не поддерживаются" in error_msg:
-            error_msg = "⚠️ Плейлисты отключены"
         logger.error(f"Ошибка обработки: {error_msg}")
-        await interaction.followup.send(f"❌ {error_msg}")
-        raise
+        await interaction.followup.send(f"⚠️ Произошла ошибка: {error_msg}")
 
 async def process_queue_requests(bot):
     queue = asyncio.Queue()
