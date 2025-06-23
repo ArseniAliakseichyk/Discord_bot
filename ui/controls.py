@@ -1,51 +1,128 @@
 import discord
+from discord import ui
 from core import state
+import time
+import asyncio
 
 class ControlButtons(discord.ui.View):
-    def __init__(self, text_channel: discord.TextChannel):
+    def __init__(self, text_channel: discord.TextChannel, play_next_func):
         super().__init__(timeout=None)
         self.text_channel = text_channel
+        self.play_next = play_next_func
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return True
+        vc = text_channel.guild.voice_client
+        is_playing = vc and vc.is_playing()
+        has_next = len(state.queue) > 0 or state.looping
+        is_looping = state.looping
+
+        for item in self.children:
+            if item.label == "⏸️ Пауза":
+                item.disabled = not is_playing
+            elif item.label == "▶️ Продолжить":
+                item.disabled = is_playing or not (vc and vc.is_paused())
+            elif item.label == "⏭️ Скип":
+                item.disabled = not has_next
+            elif item.label == "🔄 Повтор":
+                item.style = discord.ButtonStyle.success if is_looping else discord.ButtonStyle.secondary
+
+    async def update_embed(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if not vc or not state.current:
+            return
+
+        status = "▶️ Воспроизведение"
+        if vc.is_paused():
+            status = "⏸️ На паузе"
+        elif state.looping:
+            status = "🔁 Повтор"
+
+        embed = discord.Embed(
+            title="🎵 Сейчас играет",
+            description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
+            color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
+        )
+        
+        thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
+        embed.set_thumbnail(url=thumbnail)
+        
+        embed.add_field(
+            name="Длительность", 
+            value=state.current.get('duration', 'N/A'),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Источник", 
+            value="Локальный файл" if state.current.get('source') == 'local' else "YouTube",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Статус", 
+            value=status,
+            inline=True
+        )
+        
+        requested_by = state.current.get('requested_by_name', 'Неизвестно')
+        avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
+        
+        embed.set_footer(
+            text=f"Добавлено: {requested_by}",
+            icon_url=avatar_url
+        )
+
+        new_view = ControlButtons(self.text_channel, self.play_next)
+        await state.last_now_playing_message.edit(embed=embed, view=new_view)
 
     @discord.ui.button(label="⏸️ Пауза", style=discord.ButtonStyle.secondary)
     async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        state.is_manual_operation = True
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
-            await self.text_channel.send("⏸️ Музыка на паузе.")
+            state.elapsed_at_pause = time.time() - state.current_start_time
+            await self.update_embed(interaction)
 
     @discord.ui.button(label="▶️ Продолжить", style=discord.ButtonStyle.secondary)
     async def resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        state.is_manual_operation = True
         vc = interaction.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
-            await self.text_channel.send("▶️ Музыка продолжена.")
+            if state.elapsed_at_pause is not None:
+                state.current_start_time = time.time() - state.elapsed_at_pause
+                state.elapsed_at_pause = None
+            await self.update_embed(interaction)
 
     @discord.ui.button(label="⏭️ Скип", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        state.is_manual_operation = True
         vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
+        if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-            await self.text_channel.send("⏭️ Трек пропущен.")
 
     @discord.ui.button(label="⏹️ Стоп", style=discord.ButtonStyle.secondary)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        state.is_manual_operation = True
         state.queue.clear()
         vc = interaction.guild.voice_client
         if vc:
             vc.stop()
+            if state.last_now_playing_message:
+                try:
+                    await state.last_now_playing_message.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                state.last_now_playing_message = None
             await self.text_channel.send("⏹️ Воспроизведение остановлено и очередь очищена.")
 
-    @discord.ui.button(label="🔄 Повтор", style=discord.ButtonStyle.secondary)
-    async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        state.looping = not state.looping
-        await self.text_channel.send(
-            f"🔄 Режим повтора: {'ВКЛ' if state.looping else 'ВЫКЛ'}"
-        )
+    # @discord.ui.button(label="🔄 Повтор", style=discord.ButtonStyle.secondary)
+    # async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
+    #     await interaction.response.defer()
+    #     state.is_manual_operation = True
+    #     state.looping = not state.looping
+    #     await self.update_embed(interaction)
