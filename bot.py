@@ -32,13 +32,15 @@ async def on_ready():
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.id == bot.user.id and before.channel and not after.channel:
-        if state.last_now_playing_message:
+        msg_to_delete = state.last_now_playing_message
+        state.reset_playback_state()
+        
+        if msg_to_delete:
             try:
-                await state.last_now_playing_message.delete()
+                await msg_to_delete.delete()
             except (discord.NotFound, discord.HTTPException):
                 pass
-            state.last_now_playing_message = None
-        state.reset_playback_state()
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)
