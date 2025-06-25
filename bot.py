@@ -41,6 +41,5 @@ async def on_voice_state_update(member, before, after):
             except (discord.NotFound, discord.HTTPException):
                 pass
 
-
 if __name__ == "__main__":
     bot.run(TOKEN)

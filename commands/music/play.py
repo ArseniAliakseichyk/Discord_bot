@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from core.voice import connect_to_voice
+from core import state
 
 @app_commands.command(name="play", description="Воспроизвести трек с YouTube или локальный файл")
 @app_commands.describe(query="Ссылка на YouTube видео или имя локального файла")
@@ -17,6 +18,8 @@ async def slash_play(interaction: discord.Interaction, query: str):
         vc = await connect_to_voice(interaction)
         if not vc:
             return
-
-    queue = interaction.client.queue
-    await queue.put((query.strip(), interaction, vc))
+    
+    async with state.queue_lock:
+        state.pending_queue.append((query.strip(), interaction, vc))
+    
+    await interaction.followup.send("⏳ Обрабатываю ваш запрос...")
