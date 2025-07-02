@@ -71,40 +71,40 @@ async def process_queue_item(query, interaction, vc):
 
         await interaction.edit_original_response(content=f"🎵 Добавлен трек: `{track['title']}`")
 
-        if state.last_now_playing_message and state.current and vc and vc.is_connected():
-            try:
-                await state.last_now_playing_message.delete()
-            except (discord.NotFound, discord.HTTPException):
-                pass
-            state.last_now_playing_message = None
+        # if state.last_now_playing_message and state.current and vc and vc.is_connected():
+        #     try:
+        #         await state.last_now_playing_message.delete()
+        #     except (discord.NotFound, discord.HTTPException):
+        #         pass
+        #     state.last_now_playing_message = None
 
-            status = "▶️ Воспроизведение"
-            if vc.is_paused():
-                status = "⏸️ На паузе"
-            elif state.looping:
-                status = "🔁 Повтор"
+        #     status = "▶️ Воспроизведение"
+        #     if vc.is_paused():
+        #         status = "⏸️ На паузе"
+        #     elif state.looping:
+        #         status = "🔁 Повтор"
 
-            embed = discord.Embed(
-                title="🎵 Сейчас играет",
-                description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-                color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
-            )
+        #     embed = discord.Embed(
+        #         title="🎵 Сейчас играет",
+        #         description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
+        #         color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
+        #     )
 
-            thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
-            embed.set_thumbnail(url=thumbnail)
+        #     thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
+        #     embed.set_thumbnail(url=thumbnail)
 
-            embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
-            embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
-            embed.add_field(name="Статус", value=status, inline=True)
+        #     embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
+        #     embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
+        #     embed.add_field(name="Статус", value=status, inline=True)
 
-            requested_by = state.current.get('requested_by_name', 'Неизвестно')
-            avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
-            embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
+        #     requested_by = state.current.get('requested_by_name', 'Неизвестно')
+        #     avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
+        #     embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
 
-            state.last_now_playing_message = await interaction.channel.send(
-                embed=embed,
-                view=ControlButtons(interaction.channel, play_next)
-            )
+        #     state.last_now_playing_message = await interaction.channel.send(
+        #         embed=embed,
+        #         view=ControlButtons(interaction.channel, play_next)
+        #     )
 
         if vc and not vc.is_playing() and not vc.is_paused() and state.current is None:
             await play_next(vc, interaction.channel)
