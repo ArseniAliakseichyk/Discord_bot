@@ -11,7 +11,7 @@ from ui.controls import ControlButtons
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-executor = ThreadPoolExecutor(max_workers=2)
+executor = ThreadPoolExecutor(max_workers=4)
 
 def prepare_audio(query, is_local):
     logger.info(f"Preparing audio: {query}")

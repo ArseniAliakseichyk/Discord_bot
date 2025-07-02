@@ -13,7 +13,7 @@ from ui.controls import ControlButtons
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-executor = ThreadPoolExecutor(max_workers=2)
+executor = ThreadPoolExecutor(max_workers=4)
 
 def format_duration(seconds: int) -> str:
     """Форматирует длительность в секундах в формат MM:SS или HH:MM:SS"""
@@ -108,6 +108,10 @@ async def process_queue_item(query, interaction, vc):
 
         if vc and not vc.is_playing() and not vc.is_paused() and state.current is None:
             await play_next(vc, interaction.channel)
+        elif state.last_now_playing_message:
+            from ui.controls import ControlButtons
+            view = ControlButtons(interaction.channel, play_next)
+            asyncio.run_coroutine_threadsafe(view.update_embed(interaction), vc.loop)
 
     except AgeRestrictedError as e:
         await interaction.edit_original_response(content="⚠️ Видео недоступно из-за возрастных ограничений.")
