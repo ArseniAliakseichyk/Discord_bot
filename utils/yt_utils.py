@@ -7,7 +7,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-cache = TTLCache(maxsize=1000, ttl=3600)
+cache = TTLCache(maxsize=2000, ttl=7200)
 
 class AgeRestrictedError(Exception):
     pass
