@@ -26,7 +26,7 @@ async def fetch_info(query, is_search=False):
         return cache[query]
 
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=mp4]/bestaudio',
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
