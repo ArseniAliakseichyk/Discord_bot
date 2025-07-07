@@ -2,6 +2,7 @@ from asyncio import Lock
 import time
 
 queue = []
+pending_queue = []
 queue_lock = Lock()
 current = None
 looping = False

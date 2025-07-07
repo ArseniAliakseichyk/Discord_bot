@@ -7,7 +7,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-cache = TTLCache(maxsize=1000, ttl=3600)
+cache = TTLCache(maxsize=2000, ttl=7200)
 
 class AgeRestrictedError(Exception):
     pass
@@ -26,7 +26,7 @@ async def fetch_info(query, is_search=False):
         return cache[query]
 
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=mp4]/bestaudio',
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
