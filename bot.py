@@ -80,6 +80,9 @@ async def on_ready():
         if len(synced) < total:
             logger.warning(f"⚠️ Only {len(synced)} out of {total} commands synced. Possible limit reached.")
 
+        await bot.application.edit(
+            description="**Команды доступны через интерфейс бота или с помощью /help**"
+        )
         for guild in bot.guilds:
             me = guild.me
             if not me.guild_permissions.manage_messages:
