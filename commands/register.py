@@ -1,5 +1,5 @@
 from commands.music import play, now, queue, shuffle, clear
-from commands.utility import join, leave, announce, jointo,help
+from commands.utility import join, leave, announce, jointo,help,constructor
 
 async def register_commands(bot):
     bot.tree.add_command(play.slash_play)
@@ -12,3 +12,4 @@ async def register_commands(bot):
     bot.tree.add_command(announce.announce)
     bot.tree.add_command(jointo.jointo)
     bot.tree.add_command(help.help_command)
+    bot.tree.add_command(constructor.constructor)
