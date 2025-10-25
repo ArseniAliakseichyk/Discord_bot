@@ -103,30 +103,27 @@ class FieldModal(ui.Modal, title="Настройка поля"):
         self.view = view
         self.is_editing = is_editing
         
-        self.inline_select = ui.Select(
-            placeholder="Отображать в одну линию?",
-            options=[
-                discord.SelectOption(label="Да", value="yes", description="Поле будет встроено в строку с другими."),
-                discord.SelectOption(label="Нет", value="no", description="Поле займет всю ширину."),
-            ],
-            min_values=1, max_values=1
-        )
-        
         if is_editing and view.selected_field_index is not None:
             field = view.embed.fields[view.selected_field_index]
             self.name.default = field.name
             self.value.default = field.value
-            self.inline_select.default_values = ["yes"] if field.inline else ["no"]
+            self.is_inline_input.default = "да" if field.inline else "нет"
         else:
-            self.inline_select.default_values = ["no"]
-
-        self.add_item(self.inline_select)
+            self.is_inline_input.default = "нет"
 
     name = ui.TextInput(label="Заголовок поля", max_length=256, required=True)
     value = ui.TextInput(label="Текст поля", style=TextStyle.paragraph, max_length=1024, required=True)
 
+    is_inline_input = ui.TextInput(
+        label="В одну линию? (да/нет)",
+        placeholder="нет",
+        required=False,
+        max_length=3,
+        row=3
+    )
+
     async def on_submit(self, interaction: discord.Interaction):
-        is_inline = self.inline_select.values[0] == 'yes'
+        is_inline = self.is_inline_input.value.lower().strip() == 'да'
         
         if self.is_editing and self.view.selected_field_index is not None:
             self.view.embed.set_field_at(
