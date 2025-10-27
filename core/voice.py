@@ -1,11 +1,15 @@
 import discord
 from config import settings
+from core import state
 
 async def connect_to_voice(interaction: discord.Interaction, channel: discord.VoiceChannel = None):
     """
     Подключение бота к голосовому каналу.
     Если channel указан, подключается к нему. Иначе — к каналу пользователя.
     """
+    if interaction.guild:
+        state.last_text_channels[interaction.guild.id] = interaction.channel
+    
     if channel:
         try:
             return await channel.connect()

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import logging
 import asyncio
+import time
 from config import settings
 from commands.register import register_commands
 from core.queue_manager import process_queue_requests
@@ -89,7 +90,10 @@ async def on_ready():
                 channel = guild.system_channel or discord.utils.get(guild.text_channels, position=0)
                 if channel:
                     await channel.send("⚠️ У бота нет прав 'Управление сообщениями'. Это может вызвать накопление 'Сейчас играет' сообщений.")
-                    logger.warning(f"⚠️ No 'Manage Messages' permission in guild {guild.name}")
+                logger.warning(f"⚠️ No 'Manage Messages' permission in guild {guild.name}")
+        
+        asyncio.create_task(check_idle_loop())
+
     except Exception as e:
         logger.exception(f"❌ Error during startup: {e}", exc_info=True)
 
@@ -119,15 +123,32 @@ async def on_voice_state_update(member, before, after):
         return
 
     user_info = format_user(member)
-    if member.id == bot.user.id and before.channel and not after.channel:
-        msg_to_delete = state.last_now_playing_message
-        state.reset_playback_state()
-        if msg_to_delete:
-            try:
-                await msg_to_delete.delete()
-                logger.info(f"🗑️ Deleted 'Now Playing' message after disconnect")
-            except (discord.NotFound, discord.HTTPException):
-                pass
+    
+    if member.id == bot.user.id:
+        guild = (before.channel or after.channel).guild
+        guild_id = guild.id
+
+        if before.channel and not after.channel:
+            logger.info(f"🔌 Bot disconnected from VC: {before.channel.name}")
+            msg_to_delete = state.last_now_playing_message
+            state.reset_playback_state()
+
+            if guild_id in state.idle_since:
+                del state.idle_since[guild_id]
+            if guild_id in state.last_text_channels:
+                del state.last_text_channels[guild_id]
+
+            if msg_to_delete:
+                try:
+                    await msg_to_delete.delete()
+                    logger.info(f"🗑️ Deleted 'Now Playing' message after disconnect")
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+        
+        elif not before.channel and after.channel:
+            logger.info(f"🔊 Bot joined VC: {after.channel.name}")
+            state.idle_since[guild_id] = time.time()
+
     elif before.channel != after.channel:
         if after.channel:
             logger.info(f"🔊 {user_info} joined VC: {after.channel.name}")
@@ -174,6 +195,46 @@ async def on_guild_join(guild):
 @bot.event
 async def on_guild_remove(guild):
     logger.info(f"➖ Removed from guild: {guild.name}")
+
+async def check_idle_loop():
+    """Фоновая задача для проверки простоя в голосовых каналах."""
+    await bot.wait_until_ready()
+    IDLE_TIMEOUT = 600 # 10 минут (10 * 60)
+
+    while not bot.is_closed():
+        try:
+            current_time = time.time()
+            for guild in bot.guilds:
+                vc = guild.voice_client
+                guild_id = guild.id
+
+                if vc and vc.is_connected():
+                    if not vc.is_playing() and not vc.is_paused():
+                        if guild_id not in state.idle_since:
+                            state.idle_since[guild_id] = current_time
+                        else:
+                            elapsed = current_time - state.idle_since[guild_id]
+                            if elapsed > IDLE_TIMEOUT:
+                                text_channel = state.last_text_channels.get(guild_id)
+                                logger.warning(f"⏰ Idle timeout in {guild.name}. Disconnecting.")
+                                
+                                if text_channel:
+                                    await text_channel.send(f"🎵 Я 10 минут бездействовал в канале `{vc.channel.name}` и ушел. Запустите музыку снова, если нужно!")
+                                
+                                await vc.disconnect()
+                                if guild_id in state.idle_since:
+                                    del state.idle_since[guild_id]
+                    else:
+                        if guild_id in state.idle_since:
+                            del state.idle_since[guild_id]
+                
+                elif guild_id in state.idle_since:
+                    del state.idle_since[guild_id]
+
+        except Exception as e:
+            logger.error(f"Error in idle check loop: {e}", exc_info=True)
+        
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     bot.run(TOKEN)

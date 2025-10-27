@@ -50,6 +50,10 @@ class AudioPreparationError(Exception):
     pass
 
 async def play_next(vc, text_channel: discord.TextChannel):
+    
+    if vc:
+        state.last_text_channels[vc.guild.id] = text_channel
+
     async with state.queue_lock:
         if not vc or not vc.is_connected():
             state.reset_playback_state()
@@ -133,7 +137,10 @@ async def play_next(vc, text_channel: discord.TextChannel):
         else:
             msg_to_delete = state.last_now_playing_message
             state.reset_playback_state()
-        
+            
+            if vc and vc.guild:
+                state.idle_since[vc.guild.id] = time.time()
+
             if msg_to_delete:
                 try:
                     await msg_to_delete.delete()
