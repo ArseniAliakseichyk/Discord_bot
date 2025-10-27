@@ -219,7 +219,7 @@ async def check_idle_loop():
                                 logger.warning(f"⏰ Idle timeout in {guild.name}. Disconnecting.")
                                 
                                 if text_channel:
-                                    await text_channel.send(f"🎵 Я 10 минут бездействовал в канале `{vc.channel.name}` и ушел. Запустите музыку снова, если нужно!")
+                                    await text_channel.send(f"🥱 Я был **AFK** 10 минут в `{vc.channel.name}` и ушел.")
                                 
                                 await vc.disconnect()
                                 if guild_id in state.idle_since:

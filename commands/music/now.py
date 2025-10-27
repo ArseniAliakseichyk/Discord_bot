@@ -18,12 +18,23 @@ async def now_playing(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Сейчас ничего не играет.")
         return
 
+    source_type = state.current.get('source', 'youtube')
+    if source_type == 'local':
+        color = discord.Color.green()
+        source_text = "Локальный файл"
+    elif source_type == 'spotify':
+        color = discord.Color.from_rgb(30, 215, 96)
+        source_text = "Spotify"
+    else:
+        color = discord.Color.blue()
+        source_text = "YouTube"
+
     embed = discord.Embed(
         title="🎵 Сейчас играет",
         description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-        color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.blue()
+        color=color
     )
-
+    
     vc = interaction.guild.voice_client
     if vc:
         if state.looping:
@@ -38,13 +49,14 @@ async def now_playing(interaction: discord.Interaction):
         status = "❌ Не в голосовом канале"
 
     embed.add_field(name="Статус", value=status, inline=True)
-
+    
     thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
     embed.set_thumbnail(url=thumbnail)
 
     embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
-    embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
-
+    
+    embed.add_field(name="Источник", value=source_text, inline=True)
+    
     duration_seconds = state.current.get('duration_seconds', 0)
     if duration_seconds > 0:
         if state.elapsed_at_pause is not None:

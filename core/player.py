@@ -104,17 +104,30 @@ async def play_next(vc, text_channel: discord.TextChannel):
 
             vc.play(source, after=after_playing_sync)
             
+            source_type = state.current.get('source', 'youtube')
+            if source_type == 'local':
+                color = discord.Color.green()
+                source_text = "Локальный файл"
+            elif source_type == 'spotify':
+                #color = discord.Color.from_rgb(30, 215, 96)
+                color = discord.Color.gold()
+                source_text = "Spotify"
+            else:
+                color = discord.Color.gold()
+                source_text = "YouTube"
+            
             embed = discord.Embed(
                 title="🎵 Сейчас играет",
                 description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-                color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
+                color=color
             )
             
             thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
             embed.set_thumbnail(url=thumbnail)
             
             embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
-            embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
+            embed.add_field(name="Источник", value=source_text, inline=True)
+            
             embed.add_field(name="Статус", value="🔁 Повтор" if state.looping else "▶️ Воспроизведение", inline=True)
             
             requested_by = state.current.get('requested_by_name', 'Неизвестно')
