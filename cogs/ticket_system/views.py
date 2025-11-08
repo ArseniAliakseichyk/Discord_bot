@@ -2,6 +2,7 @@ import discord
 from discord.ui import Button, View, Modal, TextInput
 from discord.ext import commands
 import config.settings as config
+import logging
 
 from .helpers import (
     get_next_ticket_number, 
@@ -155,6 +156,7 @@ class PersistentButtonsView(View):
         
     @discord.ui.button(label="✅ Согласен с правилами", style=discord.ButtonStyle.success, custom_id="verify_button")
     async def verify_button(self, interaction: discord.Interaction, button: Button):
+        logger = logging.getLogger('bot')
         member = interaction.user
         
         if not config.VERIFY_ROLE_ID:
@@ -165,6 +167,7 @@ class PersistentButtonsView(View):
         
         if not role:
             await interaction.response.send_message("❌ Не удалось найти роль верификации по ID.", ephemeral=True)
+            logger.warning(f"⚠️ Ошибка верификации: Не удалось найти роль по ID ({config.VERIFY_ROLE_ID}) на сервере {interaction.guild.name}.")
             return
             
         if role in member.roles:
@@ -174,17 +177,23 @@ class PersistentButtonsView(View):
         try:
             await member.add_roles(role, reason="Верификация по кнопке с правилами")
             await interaction.response.send_message(f"✅ Вы успешно прошли верификацию! \n\nℹ️ Если есть проблемы с отображение истории каналов - перезапустите Discord ", ephemeral=True)
+            
+            logger.info(f"✅ Верификация: Пользователь {member.display_name} ({member.id}) нажал 'Согласен' и получил роль '{role.name}'.")
+
         except discord.Forbidden:
             await interaction.response.send_message("❌ У бота нет прав для выдачи этой роли.", ephemeral=True)
+            logger.warning(f"⚠️ Ошибка верификации: У бота нет прав для выдачи роли '{role.name}' пользователю {member.display_name} ({member.id}).")
+
         except Exception as e:
             await interaction.response.send_message(f"❌ Произошла ошибка при выдаче роли: {e}", ephemeral=True)
+            logger.error(f"❌ Ошибка верификации: Не удалось выдать роль '{role.name}' пользователю {member.display_name} ({member.id}). Ошибка: {e}", exc_info=True)
             print(f"Ошибка выдачи роли: {e}")
 
     @discord.ui.button(label="📨 Связаться с администрацией", style=discord.ButtonStyle.primary, custom_id="ticket_button")
     async def ticket_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(TicketModal())
 
-    @discord.ui.button(label="/Команды бота", style=discord.ButtonStyle.secondary, custom_id="help_button")
+    @discord.ui.button(label="Команды бота", style=discord.ButtonStyle.secondary, custom_id="help_button")
     async def help_button(self, interaction: discord.Interaction, button: Button):
         try:
             await help_command.callback(interaction)
