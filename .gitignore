@@ -6,3 +6,4 @@ cookies.txt
 bot.log
 venv/
 *.test
+ticket_counter.txt
