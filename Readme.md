@@ -1,121 +1,189 @@
-# Discord Music Bot
+# AstraBot: Music, Tickets & Admin Tools
 
-A Discord music bot built with Discord.py that plays music from YouTube or local files in voice channels. It supports queue management, playback controls via interactive buttons, and utility commands for voice channel management and announcements.
+🎵 🎫 🛠️
 
-## Features
-- **Music Playback**: Play tracks from YouTube (via links or search queries) or local files stored in the music folder.
-- **Queue Management**: Add, view, shuffle, or clear the song queue.
-- **Interactive Controls**: Use buttons for play, pause, resume, skip, stop, and toggle looping of the current track.
-- **Voice Channel Management**: Join or leave voice channels, or connect to specific channels with permissions.
-- **Announcements**: Send official announcements to specified channels with role mentions (admin/moderator only).
-- **Error Handling**: Robust handling for age-restricted YouTube videos, invalid links, and connection issues.
-- **Local File Support**: Play audio files stored in the configured music folder.
-- **Dynamic Status Updates**: Real-time updates of the "Now Playing" embed with track progress and status.
+AstraBot is a comprehensive, all-in-one solution designed to manage a Discord community with powerful music playback, a robust ticket system, and advanced administrative tools. Built with Discord.py, it integrates seamlessly into your server using slash commands and persistent UI components.
 
-## Installation
+## ✨ Key Features
+
+* **🎧 High-Quality Music:** Play tracks, search YouTube, use Spotify links, and manage queues with an interactive "Now Playing" interface.
+* **🎫 Interactive Ticket System:** A professional ticket workflow, from creation via a modal to a private, claimed channel for support staff.
+* **✅ Role-Based Verification:** A persistent "Agree to Rules" button that automatically grants a verification role.
+* **🛠️ Advanced Admin Tools:** Includes a powerful modal-based `/announce` command with previews and a modular `/constructor` for building complex embeds visually.
+* **🔒 Permission Controlled:** Features are protected by role IDs (`ALLOWED_ROLES`, `SUPPORT_ROLE_ID`) defined in your config.
+
+---
+
+## Command Showcase
+
+AstraBot's features are split into logical modules, all accessible via slash commands.
+
+### 🎵 Music Module
+
+Bring high-fidelity music to your voice channels.
+
+* `/play <query>`: Plays music from a YouTube URL, search query, Spotify link (converts to YT search), or local file name.
+* `/now`: Displays the currently playing track with a progress bar and details.
+* `/queue`: Shows the list of upcoming songs.
+* `/shuffle`: Randomizes the current queue.
+* `/clear`: Empties the music queue.
+* `/join` / `/leave`: Standard voice channel commands.
+* `/jointo <channel>`: (Admin) Forces the bot to join a specific voice channel.
+
+**Interactive Controls:**
+The `/now` command (and the message sent when a song starts) includes buttons for:
+* **⏸️ Pause** / **▶️ Resume**
+* **⏭️ Skip**
+* **⏹️ Stop** (Stops playback and clears the queue)
+
+### 🎫 Ticket & Verification System
+
+A complete system for user verification and support, triggered from a single admin-posted message.
+
+* `/send_rules`: (Role-Restricted) Posts the main rules embed and the persistent button view.
+
+This message contains three buttons:
+
+1.  **✅ Agree to Rules**
+    * Grants the user the `VERIFY_ROLE_ID`.
+    * Sends an ephemeral "Success" message.
+    * Won't grant the role if the user already has it.
+
+2.  **📨 Contact Admin**
+    * Opens a modal (`TicketModal`) asking for a **Subject** and **Description**.
+    * Creates a new, private text channel in the `TICKET_CATEGORY_ID`.
+    * Pings the `SUPPORT_ROLE_ID` in the new channel.
+    * The user who created the ticket **cannot** see the channel yet.
+
+3.  **🤖 Bot Commands**
+    * Instantly displays the interactive `/help` menu to the user (ephemeral).
+
+**Ticket Workflow (For Staff):**
+1.  A support staff member sees the new ticket and clicks **"Взять в работу" (Claim Ticket)**.
+2.  The channel is renamed (e.g., `claimed-ticket-0001`).
+3.  The user who created the ticket is **added** to the channel with `read_messages`, `send_messages`, and `read_message_history` permissions.
+4.  The bot sends a message tagging the user and the staff member who claimed it.
+5.  When the issue is resolved, staff clicks **"Закрыть тикет" (Close Ticket)**.
+6.  The channel is renamed (e.g., `closed-ticket-0001`) and the user's permissions are revoked, hiding the channel from them.
+
+### 🛠️ Admin & Utility Tools
+
+Powerful tools for server management, restricted to `ALLOWED_ROLES`.
+
+* `/help`: Displays a dynamic, interactive help menu showing all available commands.
+* `/announce`: Opens a modal to create a beautiful, custom announcement. You can set a target channel, role to mention, image URL, and more. It even shows you a preview before sending!
+* `/constructor`: A "Giga-Constructor" for visually building and sending extremely complex embeds. You can add/edit/reorder fields, set authors, footers, images, and text content, all from an interactive button panel.
+
+---
+
+## 🚀 Getting Started
+
+Follow these steps to get AstraBot running on your own server.
 
 ### Prerequisites
-1. **Python 3.8+**: Ensure Python is installed.
-2. **FFmpeg**: Install FFmpeg and add it to your system's PATH.
-3. **Discord Bot Token**: Create a bot on the [Discord Developer Portal](https://discord.com/developers/applications) and obtain its token.
 
-### Steps
-1. **Clone the Repository**:
-    ```bash
-    git clone https://github.com/ArseniAliakseichyk/Discord_bot_music.git
-    cd Discord_bot_music
-    ```
+* [Python 3.10+](https://www.python.org/downloads/)
+* [FFmpeg](https://ffmpeg.org/download.html) (Must be added to your system's PATH for music playback)
+* [Git](https://git-scm.com/downloads) (Recommended)
 
-2. **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+### 1. Clone the Repository
 
-3. **Configure Environment Variables**:
-   Create a `.env` file in the root directory with the following:
-    ```
-    DISCORD_TOKEN=your-discord-bot-token
-    ALLOWED_ROLES=admin-role-id,moderator-role-id
-    DEFAULT_CHANNEL=announcements-channel-id
-    ```
-   - `DISCORD_TOKEN`: Your bot's token from the Discord Developer Portal.
-   - `ALLOWED_ROLES`: Comma-separated list of role IDs allowed to use restricted commands (e.g., `/announce`, `/jointo`).
-   - `DEFAULT_CHANNEL`: ID of the default channel for announcements.
-
-4. **Set Up Music Folder**:
-   Create a `music` folder in the root directory to store local audio files (configured in `config/settings.py`).
-
-5. **Run the Bot**:
-    ```bash
-    python bot.py
-    ```
-
-### Requirements
-The bot uses the following Python packages (listed in `requirements.txt`):
-- `discord.py>=2.3.2`: For Discord API interaction.
-- `yt-dlp>=2023.7.6`: For fetching YouTube audio streams.
-- `python-dotenv>=1.0.0`: For loading `.env` variables.
-- `ffmpeg-python>=0.2.0`: For audio processing with FFmpeg.
-- `cachetools>=5.3.1`: For caching YouTube metadata.
-- `tenacity>=8.2.3`: For retrying failed operations.
-- `PyNaCl>=1.5.0`: For voice channel audio encryption.
-
-Install them with:
 ```bash
+git clone [https://github.com/your-username/AstraBot.git](https://github.com/your-username/AstraBot.git)
+cd AstraBot
+```
+
+### 2. Install Dependencies
+
+It's highly recommended to use a virtual environment.
+
+```bash
+# Create a virtual environment (Windows)
+python -m venv venv
+.env\Scriptsctivate
+
+# Create a virtual environment (Linux/macOS)
+python3 -m venv venv
+source venv/bin/activate
+
+# Install requirements
 pip install -r requirements.txt
 ```
 
-## Directory Structure
-- **`bot.py`**: Main bot script that initializes the bot, loads environment variables, and handles events like `on_ready` and `on_voice_state_update`.
-- **`commands/`**:
-  - **`music/`**: Music-related commands (`/play`, `/now`, `/queue`, `/shuffle`, `/clear`).
-  - **`utility/`**: Voice and admin commands (`/join`, `/leave`, `/jointo`, `/announce`).
-  - **`register.py`**: Registers slash commands with Discord.
-- **`config/`**:
-  - **`settings.py`**: Bot configuration (intents, music folder, announcement settings).
-- **`core/`**:
-  - **`player.py`**: Handles audio playback and track processing.
-  - **`queue_manager.py`**: Manages the song queue and processes track requests.
-  - **`state.py`**: Tracks playback state (queue, current track, looping, etc.).
-  - **`voice.py`**: Manages voice channel connections.
-- **`ui/`**:
-  - **`controls.py`**: Defines interactive buttons for playback control.
-- **`utils/`**:
-  - **`yt_utils.py`**: Utilities for fetching YouTube metadata using `yt-dlp`.
-- **`.gitignore`**: Ignores `.env`, `__pycache__`, and other temporary files.
-- **`requirements.txt`**: Lists Python dependencies.
+**Key Libraries:**
 
-## Commands
-All commands are slash commands (`/` prefix). Below is a list of available commands:
+* discord.py>=2.3.2
+* yt-dlp (For YouTube/Spotify playback)
+* python-dotenv (For managing your .env file)
+* requests
+* PyNaCl (For voice)
 
-### Music Commands
-- **`/play <query>`**: Play a track from a YouTube link, search query, or local file name. Playlists are disabled.
-- **`/now`**: Display the currently playing track with details (title, duration, progress, source, status).
-- **`/queue`**: Show the current song queue.
-- **`/shuffle`**: Randomly shuffle the queue.
-- **`/clear`**: Clear the song queue.
+### 3. Configuration (.env)
 
-### Voice Commands
-- **`/join`**: Connect the bot to the user's voice channel.
-- **`/leave`**: Disconnect the bot from the voice channel and clear the queue.
-- **`/jointo <channel>`**: Connect the bot to a specific voice channel by name or ID (requires admin or allowed role).
+This is the most important step. Create a file named `.env` in the root of the project. Copy and paste the template below and fill in all the required IDs.
 
-### Utility Commands
-- **`/announce <message> [channel] [mention_role]`**: Send an official announcement to a specified or default channel with an optional role mention (requires admin or allowed role).
+To get IDs: Enable Developer Mode in Discord, then right-click on a user, role, channel, or server and select "Copy ID".
 
-### Interactive Buttons
-Available on the "Now Playing" embed:
-- **⏸️ Pause**: Pause the current track.
-- **▶️ Resume**: Resume a paused track.
-- **⏭️ Skip**: Skip to the next track in the queue.
-- **⏹️ Stop**: Stop playback and clear the queue.
-- **🔄 Loop**: Toggle looping of the current track (commented out in current code but can be enabled).
+```ini
+# ---------------------------------
+# CORE BOT CONFIG
+# ---------------------------------
 
-## Configuration
-- **Music Folder**: Set in `config/settings.py` (`MUSIC_FOLDER='./music'`). Place local audio files here.
-- **Intents**: Configured in `config/settings.py` to enable message content and voice state updates.
-- **Announcement Settings**: Defined in `config/settings.py` (`ANNOUNCE` dictionary) for default channel and embed color.
-- **Environment Variables**: Set in `.env` for token, allowed roles, and default announcement channel.
+DISCORD_TOKEN=your_bot_token_here
+LOG_CHANNEL_ID=your_log_channel_id_here
 
-## License
+# ---------------------------------
+# ADMIN & UTILITY CONFIG
+# ---------------------------------
+
+ALLOWED_ROLES=role_id_1,role_id_2
+DEFAULT_CHANNEL=default_announcement_channel_id_here
+EXCLUDED_USER_IDS=user_id_1,user_id_2
+
+# ---------------------------------
+# TICKET & VERIFICATION SYSTEM
+# ---------------------------------
+
+VERIFY_ROLE_ID=role_id_for_verified_members
+TICKET_CATEGORY_ID=category_id_for_tickets
+SUPPORT_ROLE_ID=role_id_for_support_staff
+
+# ---------------------------------
+# RULES EMBED CONFIG
+# ---------------------------------
+GUILD_ID=your_server_id_here
+CREATOR_ID=user_id_of_creator
+ADMIN_ROLE_ID=your_admin_role_id
+MODERATOR_ROLE_ID=your_moderator_role_id
+```
+
+### 4. Run the Bot
+
+```bash
+python bot.py
+```
+
+The bot will connect, log its startup, and be ready to use.
+
+---
+
+## 📁 Project Structure
+
+```
+/AstraBot
+|-- .env
+|-- .gitignore
+|-- bot.py
+|-- requirements.txt
+|-- ticket_counter.txt
+|-- [commands]
+|-- [config]
+|-- [core]
+|-- [cogs]
+|-- [ui]
+|-- [utils]
+```
+
+## 📄 License
+
 This project is licensed under the MIT License.

@@ -8,6 +8,7 @@ import asyncio
 import time
 from config import settings
 from commands.register import register_commands
+
 from core.queue_manager import process_queue_requests
 
 load_dotenv()
@@ -222,8 +223,10 @@ async def check_idle_loop():
                                     await text_channel.send(f"🥱 Я был **AFK** 10 минут в `{vc.channel.name}` и ушел.")
                                 
                                 await vc.disconnect()
+
                                 if guild_id in state.idle_since:
                                     del state.idle_since[guild_id]
+                    
                     else:
                         if guild_id in state.idle_since:
                             del state.idle_since[guild_id]
@@ -236,5 +239,22 @@ async def check_idle_loop():
         
         await asyncio.sleep(60)
 
+async def load_cogs():
+    """Загружает все коги."""
+    try:
+        await bot.load_extension("cogs.ticket_system.cog")
+        logger.info("✅ Ког 'ticket_system' успешно загружен.")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при загрузке кога 'ticket_system': {e}", exc_info=True)
+
+async def main():
+    async with bot:
+        await load_cogs()
+        await bot.start(TOKEN)
+
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🤖 Завершение работы по команде (Ctrl+C)...")
+        print("🤖 Бот успешно остановлен.")
