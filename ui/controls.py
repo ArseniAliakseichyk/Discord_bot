@@ -36,24 +36,35 @@ class ControlButtons(discord.ui.View):
         elif state.looping:
             status = "🔁 Повтор"
 
+        source_type = state.current.get('source', 'youtube')
+        if source_type == 'local':
+            color = discord.Color.green()
+            source_text = "Локальный файл"
+        elif source_type == 'spotify':
+            color = discord.Color.gold()
+            source_text = "Spotify"
+        else:
+            color = discord.Color.gold()
+            source_text = "YouTube"
+
         embed = discord.Embed(
             title="🎵 Сейчас играет",
             description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-            color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
+            color=color
         )
-        
+
         thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
         embed.set_thumbnail(url=thumbnail)
-        
+
         embed.add_field(
-            name="Длительность", 
+            name="Длительность",
             value=state.current.get('duration', 'N/A'),
             inline=True
         )
-        
+
         embed.add_field(
-            name="Источник", 
-            value="Локальный файл" if state.current.get('source') == 'local' else "YouTube",
+            name="Источник",
+            value=source_text,
             inline=True
         )
         
@@ -109,6 +120,7 @@ class ControlButtons(discord.ui.View):
         await interaction.response.defer()
         state.is_manual_operation = True
         state.queue.clear()
+        state.pending_queue.clear()
         vc = interaction.guild.voice_client
         if vc:
             vc.stop()
@@ -119,10 +131,3 @@ class ControlButtons(discord.ui.View):
                     pass
                 state.last_now_playing_message = None
             await self.text_channel.send("⏹️ Воспроизведение остановлено и очередь очищена.")
-
-    # @discord.ui.button(label="🔄 Повтор", style=discord.ButtonStyle.secondary)
-    # async def loop_(self, interaction: discord.Interaction, button: discord.ui.Button):
-    #     await interaction.response.defer()
-    #     state.is_manual_operation = True
-    #     state.looping = not state.looping
-    #     await self.update_embed(interaction)

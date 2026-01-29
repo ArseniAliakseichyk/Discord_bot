@@ -1,7 +1,10 @@
 import discord
 import datetime
+import logging
 import config.settings as config
 from discord.ext import commands
+
+logger = logging.getLogger(__name__)
 
 TICKET_COUNTER_FILE = "ticket_counter.txt"
 
@@ -75,7 +78,7 @@ async def claim_ticket_logic(interaction: discord.Interaction, original_message:
             creator_id = int(creator_id_str)
             creator = interaction.guild.get_member(creator_id)
         except (ValueError, IndexError):
-            print(f"Не удалось извлечь ID создателя из топика: {topic}")
+            logger.warning(f"Не удалось извлечь ID создателя из топика: {topic}")
 
     if not creator:
         await interaction.followup.send("❌ Критическая ошибка: Не удалось найти создателя тикета.", ephemeral=True)
@@ -97,12 +100,12 @@ async def claim_ticket_logic(interaction: discord.Interaction, original_message:
         
         fields_to_readd = embed.fields[:]
         embed.clear_fields()
-        
+
         description_text = ""
         if fields_to_readd:
             field = fields_to_readd.pop(0)
             description_text = field.value
-        embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            embed.add_field(name=field.name, value=field.value, inline=field.inline)
 
         embed.add_field(name="✅ В работе у", value=f"{member.mention}", inline=False)
         
@@ -123,4 +126,4 @@ async def claim_ticket_logic(interaction: discord.Interaction, original_message:
 
     except Exception as e:
         await interaction.followup.send(f"❌ Произошла ошибка при обработке тикета: {e}", ephemeral=True)
-        print(f"Ошибка claim_ticket_logic: {e}")
+        logger.error(f"Ошибка claim_ticket_logic: {e}", exc_info=True)

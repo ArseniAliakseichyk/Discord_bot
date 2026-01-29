@@ -4,10 +4,28 @@ import logging
 from cachetools import TTLCache
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 cache = TTLCache(maxsize=2000, ttl=7200)
+
+# Общие опции для yt-dlp
+YDL_OPTS = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'no_warnings': True,
+    'noplaylist': True,
+    'ignoreerrors': False,
+    'extract_flat': False,
+    'force_generic_extractor': False,
+    'cookiefile': 'cookies.txt',
+    'geo_bypass': True,
+    'geo_bypass_country': 'US',
+    'age_limit': 25,
+    'socket_timeout': 10,
+    'retries': 3,
+    'http_chunk_size': 1048576,
+    'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+}
 
 class AgeRestrictedError(Exception):
     pass
@@ -25,23 +43,8 @@ async def fetch_info(query, is_search=False):
         logger.info(f"Cache hit for {query}")
         return cache[query]
 
-    ydl_opts = {
-        'format': 'bestaudio[ext=mp4]/bestaudio',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'ignoreerrors': False,
-        'extract_flat': False,
-        'force_generic_extractor': False,
-        'cookiefile': 'cookies.txt',
-        'geo_bypass': True,
-        'age_limit': 25,
-        'socket_timeout': 5,
-        'http_chunk_size': 524288
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
             info = await asyncio.to_thread(ydl.extract_info, query, download=False)
             
             if not info:
@@ -68,23 +71,8 @@ async def fetch_info(query, is_search=False):
         raise
 
 def fetch_info_sync(query):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'ignoreerrors': False,
-        'extract_flat': False,
-        'force_generic_extractor': False,
-        'cookiefile': 'cookies.txt',
-        'geo_bypass': True,
-        'age_limit': 25,
-        'socket_timeout': 5,
-        'http_chunk_size': 524288
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
             info = ydl.extract_info(query, download=False)
             
             if not info:

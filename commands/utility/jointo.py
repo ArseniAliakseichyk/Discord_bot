@@ -4,7 +4,6 @@ from core.voice import connect_to_voice
 import os
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 @app_commands.command(name="jointo", description="Подключить бота к указанному голосовому каналу")

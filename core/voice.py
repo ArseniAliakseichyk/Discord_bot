@@ -2,6 +2,13 @@ import discord
 from config import settings
 from core import state
 
+async def _send_error(interaction: discord.Interaction, message: str):
+    """Отправляет сообщение об ошибке, учитывая состояние interaction."""
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
 async def connect_to_voice(interaction: discord.Interaction, channel: discord.VoiceChannel = None):
     """
     Подключение бота к голосовому каналу.
@@ -9,21 +16,19 @@ async def connect_to_voice(interaction: discord.Interaction, channel: discord.Vo
     """
     if interaction.guild:
         state.last_text_channels[interaction.guild.id] = interaction.channel
-    
+
     if channel:
         try:
             return await channel.connect()
         except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Не удалось подключиться к каналу `{channel.name}`: {str(e)}",
-                ephemeral=True
-            )
+            await _send_error(interaction, f"❌ Не удалось подключиться к каналу `{channel.name}`: {str(e)}")
             return None
     else:
         if interaction.user.voice:
-            return await interaction.user.voice.channel.connect()
-        await interaction.response.send_message(
-            "❌ Сначала подключитесь к голосовому каналу.",
-            ephemeral=True
-        )
+            try:
+                return await interaction.user.voice.channel.connect()
+            except Exception as e:
+                await _send_error(interaction, f"❌ Не удалось подключиться: {str(e)}")
+                return None
+        await _send_error(interaction, "❌ Сначала подключитесь к голосовому каналу.")
         return None

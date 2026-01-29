@@ -8,6 +8,7 @@ async def leave(interaction: discord.Interaction):
     if vc:
         await vc.disconnect()
         state.queue.clear()
+        state.pending_queue.clear()
         if state.last_now_playing_message:
             try:
                 await state.last_now_playing_message.delete()

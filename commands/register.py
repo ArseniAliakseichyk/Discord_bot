@@ -1,5 +1,6 @@
 from commands.music import play, now, queue, shuffle, clear
-from commands.utility import join, leave, announce, jointo,help,constructor
+from commands.utility import join, leave, announce, jointo, help
+from commands.utility.constructor import constructor, schedule_cancel, schedule_list
 
 async def register_commands(bot):
     bot.tree.add_command(play.slash_play)
@@ -12,4 +13,7 @@ async def register_commands(bot):
     bot.tree.add_command(announce.announce)
     bot.tree.add_command(jointo.jointo)
     bot.tree.add_command(help.help_command)
-    bot.tree.add_command(constructor.constructor)
+    # Constructor module commands
+    bot.tree.add_command(constructor)
+    bot.tree.add_command(schedule_cancel)
+    bot.tree.add_command(schedule_list)

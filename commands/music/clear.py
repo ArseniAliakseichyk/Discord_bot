@@ -4,5 +4,7 @@ from core import state
 
 @app_commands.command(name="clear", description="Очистить очередь")
 async def clear_queue(interaction: discord.Interaction):
-    state.queue.clear()
+    async with state.queue_lock:
+        state.queue.clear()
+        state.pending_queue.clear()
     await interaction.response.send_message("🧹 Очередь очищена.")

@@ -13,7 +13,8 @@ from core.queue_manager import process_queue_requests
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+_log_channel_id = os.getenv("LOG_CHANNEL_ID")
+LOG_CHANNEL_ID = int(_log_channel_id) if _log_channel_id else None
 
 excluded_ids_raw = os.getenv("EXCLUDED_USER_IDS", "")
 EXCLUDED_USER_IDS = set(int(uid.strip()) for uid in excluded_ids_raw.split(",") if uid.strip().isdigit())
@@ -33,6 +34,8 @@ class DiscordHandler(logging.Handler):
         self.log_channel_id = LOG_CHANNEL_ID
 
     def emit(self, record):
+        if not self.log_channel_id:
+            return
         log_entry = self.format(record)
         channel = self.bot.get_channel(self.log_channel_id)
         if channel:
@@ -41,16 +44,20 @@ class DiscordHandler(logging.Handler):
                 self.bot.loop
             )
 
+# Настройка root logger для всех модулей
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8")
+    ]
+)
+
 logger = logging.getLogger('bot')
-logger.setLevel(logging.INFO)
 
 discord_handler = DiscordHandler(bot)
 discord_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(discord_handler)
-
-file_handler = logging.FileHandler("bot.log", encoding="utf-8")
-file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-logger.addHandler(file_handler)
 
 @bot.event
 async def on_connect():
@@ -72,7 +79,7 @@ async def on_error(event, *args, **kwargs):
 async def on_ready():
     logger.info(f'✅ Bot {bot.user} successfully started')
     try:
-        state.reset_playback_state()
+        state.full_reset()  # Полный сброс при старте
         bot.queue = await process_queue_requests(bot)
         await register_commands(bot)
         synced = await bot.tree.sync()

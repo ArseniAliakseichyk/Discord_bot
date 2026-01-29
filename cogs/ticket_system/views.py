@@ -4,6 +4,8 @@ from discord.ext import commands
 import config.settings as config
 import logging
 
+logger = logging.getLogger(__name__)
+
 from .helpers import (
     get_next_ticket_number, 
     get_ticket_channel_name,
@@ -79,7 +81,7 @@ class TicketModal(Modal, title="Опишите ваш запрос в подде
             
         except Exception as e:
             await interaction.followup.send(f"❌ Произошла ошибка при создании тикета: {e}", ephemeral=True)
-            print(f"Ошибка создания тикета: {e}")
+            logger.error(f"Ошибка создания тикета: {e}", exc_info=True)
 
 class TicketManagementView(View):
     """Персистентный View для управления тикетом (взять в работу, закрыть)."""
@@ -118,7 +120,7 @@ class TicketManagementView(View):
                 creator_id = int(creator_id_str)
                 creator = member.guild.get_member(creator_id)
             except (ValueError, IndexError):
-                print(f"Не удалось извлечь ID создателя из топика: {topic}")
+                logger.warning(f"Не удалось извлечь ID создателя из топика: {topic}")
 
         for item in self.children:
             item.disabled = True
@@ -156,7 +158,6 @@ class PersistentButtonsView(View):
         
     @discord.ui.button(label="✅ Согласен с правилами", style=discord.ButtonStyle.success, custom_id="verify_button")
     async def verify_button(self, interaction: discord.Interaction, button: Button):
-        logger = logging.getLogger('bot')
         member = interaction.user
         
         if not config.VERIFY_ROLE_ID:
@@ -187,7 +188,6 @@ class PersistentButtonsView(View):
         except Exception as e:
             await interaction.response.send_message(f"❌ Произошла ошибка при выдаче роли: {e}", ephemeral=True)
             logger.error(f"❌ Ошибка верификации: Не удалось выдать роль '{role.name}' пользователю {member.display_name} ({member.id}). Ошибка: {e}", exc_info=True)
-            print(f"Ошибка выдачи роли: {e}")
 
     @discord.ui.button(label="📨 Связаться с администрацией", style=discord.ButtonStyle.primary, custom_id="ticket_button")
     async def ticket_button(self, interaction: discord.Interaction, button: Button):
@@ -198,7 +198,7 @@ class PersistentButtonsView(View):
         try:
             await help_command.callback(interaction)
         except Exception as e:
-            print(f"Ошибка при вызове help_command из view: {e}")
+            logger.error(f"Ошибка при вызове help_command из view: {e}", exc_info=True)
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message("❌ Произошла ошибка при вызове команды /help.", ephemeral=True)

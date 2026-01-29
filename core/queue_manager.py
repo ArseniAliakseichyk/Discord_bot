@@ -1,21 +1,22 @@
+"""
+Оптимизированный менеджер очереди с быстрым добавлением треков.
+"""
 import asyncio
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
 import re
 import requests
 from core import state
 from utils.yt_utils import fetch_info, AgeRestrictedError
 from config import settings
 from core.player import play_next
+from core.audio_manager import prefetch_track, metadata_cache
 from tenacity import retry, stop_after_attempt, wait_exponential
 import discord
-from ui.controls import ControlButtons
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-executor = ThreadPoolExecutor(max_workers=4)
+# Импортируем os для проверки локальных файлов (уже есть выше)
 
 def format_duration(seconds: int) -> str:
     """Форматирует длительность в секундах в формат MM:SS или HH:MM:SS"""
@@ -75,7 +76,7 @@ async def process_queue_item(query, interaction, vc):
         elif "spotify.com" in query:
             try:
                 loop = asyncio.get_running_loop()
-                spotify_title = await loop.run_in_executor(executor, fetch_spotify_title_sync, query)
+                spotify_title = await loop.run_in_executor(state.executor, fetch_spotify_title_sync, query)
             except Exception as e:
                 logger.error(f"Failed to fetch Spotify title: {e}", exc_info=True)
                 await interaction.edit_original_response(content=f"⚠️ {str(e)}")
@@ -84,14 +85,15 @@ async def process_queue_item(query, interaction, vc):
             search_query = "ytsearch:" + spotify_title
             info = await fetch_info(search_query, is_search=True)
 
-            if not info or not info.get('url'):
+            if not info or not info.get('webpage_url'):
                 raise ValueError(f"Не удалось найти трек '{spotify_title}' на YouTube")
 
             duration_seconds = info.get('duration', 0)
             duration_str = format_duration(duration_seconds)
-            
+
+            # Сохраняем webpage_url вместо url, чтобы получать свежий аудио URL при воспроизведении
             track = {
-                'query': info['url'],
+                'query': info.get('webpage_url'),
                 'title': info.get('title', spotify_title),
                 'web_url': info.get('webpage_url', 'https://youtube.com'),
                 'thumbnail': info.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png'),
@@ -109,14 +111,15 @@ async def process_queue_item(query, interaction, vc):
                 search_query = "ytsearch:" + query
                 info = await fetch_info(search_query, is_search=True)
 
-            if not info or not info.get('url'):
-                raise ValueError("Не удалось получить аудио URL")
+            if not info or not info.get('webpage_url'):
+                raise ValueError("Не удалось получить информацию о треке")
 
             duration_seconds = info.get('duration', 0)
             duration_str = format_duration(duration_seconds)
 
+            # Сохраняем webpage_url вместо url, чтобы получать свежий аудио URL при воспроизведении
             track = {
-                'query': info['url'],
+                'query': info.get('webpage_url'),
                 'title': info.get('title', 'Без названия'),
                 'web_url': info.get('webpage_url', 'https://youtube.com'),
                 'thumbnail': info.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png'),
@@ -129,15 +132,26 @@ async def process_queue_item(query, interaction, vc):
 
         async with state.queue_lock:
             state.queue.append(track)
+            queue_position = len(state.queue)
 
-        await interaction.edit_original_response(content=f"🎵 Добавлен трек: `{track['title']}`")
+        # Быстрый ответ пользователю
+        if queue_position == 1 and state.current is None:
+            await interaction.edit_original_response(content=f"🎵 Играю: `{track['title']}`")
+        else:
+            await interaction.edit_original_response(
+                content=f"🎵 Добавлено #{queue_position}: `{track['title']}`"
+            )
+
+        # Prefetch этого трека если он следующий или единственный
+        if queue_position <= 2 and not os.path.exists(track['query']):
+            asyncio.create_task(prefetch_track(track['query']))
 
         if vc and not vc.is_playing() and not vc.is_paused() and state.current is None:
             await play_next(vc, interaction.channel)
-        elif state.last_now_playing_message:
+        elif state.last_now_playing_message and vc:
             from ui.controls import ControlButtons
             view = ControlButtons(interaction.channel, play_next)
-            asyncio.run_coroutine_threadsafe(view.update_embed(interaction), vc.loop)
+            asyncio.create_task(view.update_embed(interaction))
 
     except AgeRestrictedError as e:
         await interaction.edit_original_response(content="⚠️ Видео недоступно из-за возрастных ограничений.")
@@ -153,17 +167,16 @@ async def process_queue_item(query, interaction, vc):
 
 async def process_pending_requests():
     """Фоновая задача для обработки pending_queue"""
-    loop = asyncio.get_running_loop()
     while True:
         async with state.queue_lock:
             if state.pending_queue:
                 query, interaction, vc = state.pending_queue.pop(0)
             else:
                 query = None
-        
+
         if query:
-            asyncio.run_coroutine_threadsafe(process_queue_item(query, interaction, vc), loop)
-        
+            asyncio.create_task(process_queue_item(query, interaction, vc))
+
         await asyncio.sleep(1)
 
 async def process_queue_requests(bot):
@@ -181,38 +194,3 @@ async def process_queue_requests(bot):
     asyncio.create_task(worker())
     asyncio.create_task(process_pending_requests())
     return queue
-
-        # if state.last_now_playing_message and state.current and vc and vc.is_connected():
-        #     try:
-        #         await state.last_now_playing_message.delete()
-        #     except (discord.NotFound, discord.HTTPException):
-        #         pass
-        #     state.last_now_playing_message = None
-
-        #     status = "▶️ Воспроизведение"
-        #     if vc.is_paused():
-        #         status = "⏸️ На паузе"
-        #     elif state.looping:
-        #         status = "🔁 Повтор"
-
-        #     embed = discord.Embed(
-        #         title="🎵 Сейчас играет",
-        #         description=f"[{state.current['title']}]({state.current.get('web_url', 'https://youtube.com')})",
-        #         color=discord.Color.green() if state.current.get('source') == 'local' else discord.Color.gold()
-        #     )
-
-        #     thumbnail = state.current.get('thumbnail', 'https://i.imgur.com/zG0SXqW.png')
-        #     embed.set_thumbnail(url=thumbnail)
-
-        #     embed.add_field(name="Длительность", value=state.current.get('duration', 'N/A'), inline=True)
-        #     embed.add_field(name="Источник", value="Локальный файл" if state.current.get('source') == 'local' else "YouTube", inline=True)
-        #     embed.add_field(name="Статус", value=status, inline=True)
-
-        #     requested_by = state.current.get('requested_by_name', 'Неизвестно')
-        #     avatar_url = state.current.get('requested_by_avatar', 'https://i.imgur.com/7R5eEBd.png')
-        #     embed.set_footer(text=f"Добавлено: {requested_by}", icon_url=avatar_url)
-
-        #     state.last_now_playing_message = await interaction.channel.send(
-        #         embed=embed,
-        #         view=ControlButtons(interaction.channel, play_next)
-        #     )
