@@ -1,0 +1,46 @@
+# Lavalink v4 configuration.
+# YouTube is served by the youtube-source plugin (the built-in source is
+# deprecated). The password is injected from the LAVALINK_PASSWORD env var.
+server:
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+      repository: "https://maven.lavalink.dev/releases"
+  server:
+    password: "${LAVALINK_SERVER_PASSWORD:youshallnotpass}"
+    sources:
+      youtube: false      # disabled here; handled by the plugin below
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: true         # plays files mounted at /music
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    trackStuckThresholdMs: 10000
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    opusEncodingQuality: 10
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # Client order matters; these tend to be the most reliable.
+    clients:
+      - MUSIC
+      - WEB
+      - ANDROID_VR
+      - TVHTML5EMBEDDED
+      - WEBEMBEDDED
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO

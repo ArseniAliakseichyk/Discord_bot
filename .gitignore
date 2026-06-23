@@ -4,3 +4,8 @@ __pycache__/
 *$py.class
 cookies.txt
 bot.log
+data/
+lavalink/plugins/
+.pytest_cache/
+.venv/
+venv/
