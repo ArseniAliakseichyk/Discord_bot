@@ -6,6 +6,7 @@ services:
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4
     restart: unless-stopped
+    user: "root"
     environment:
       - _JAVA_OPTIONS=-Xmx512m
       - SERVER_PORT=2333
