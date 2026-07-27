@@ -54,3 +54,88 @@ async def test_session_and_queue_roundtrip(db):
     await db.clear_session(7)
     assert await db.load_sessions() == []
     assert await db.load_queue(7) == []
+
+
+async def test_get_settings_returns_a_copy_not_the_cache(db):
+    """Mutating the returned object must not corrupt the in-process cache."""
+    first = await db.get_settings(11)
+    first.dj_role_id = 999
+    second = await db.get_settings(11)
+    assert second.dj_role_id is None
+
+
+async def test_update_settings_result_is_detached_from_the_cache(db):
+    returned = await db.update_settings(12, dj_role_id=5)
+    returned.dj_role_id = 777
+    assert (await db.get_settings(12)).dj_role_id == 5
+
+
+async def test_failed_write_leaves_cache_and_disk_in_agreement(db, monkeypatch):
+    await db.update_settings(13, dj_role_id=1)
+
+    original_execute = db.conn.execute
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if "INSERT INTO guild_settings" in args[0]:
+            raise RuntimeError("disk full")
+        return await original_execute(*args, **kwargs)
+
+    monkeypatch.setattr(db.conn, "execute", flaky)
+    with pytest.raises(RuntimeError):
+        await db.update_settings(13, dj_role_id=2)
+    monkeypatch.undo()
+
+    # The cache must still show the last successfully persisted value.
+    assert (await db.get_settings(13)).dj_role_id == 1
+
+
+async def test_save_session_rolls_back_on_failure(db):
+    """A failed executemany must not leave a staged DELETE for a later commit."""
+    await db.save_session(20, 1, 1, [SavedTrack("https://x/keep")])
+
+    original = db.conn.executemany
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("write failed")
+
+    db.conn.executemany = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await db.save_session(20, 1, 1, [SavedTrack("https://x/new")])
+    db.conn.executemany = original  # type: ignore[method-assign]
+
+    # An unrelated commit must not flush the rolled-back DELETE.
+    await db.update_settings(21, dj_role_id=1)
+    assert [t.uri for t in await db.load_queue(20)] == ["https://x/keep"]
+
+
+async def test_authorized_guilds_is_immutable(db):
+    await db.authorize_guild(30, None)
+    guilds = await db.authorized_guilds()
+    assert isinstance(guilds, frozenset)
+    assert guilds == {30}
+
+
+async def test_connect_is_idempotent(db):
+    conn_before = db.conn
+    await db.connect()  # must not replace (and leak) the open connection
+    assert db.conn is conn_before
+
+
+async def test_close_clears_caches(tmp_path):
+    path = str(tmp_path / "reuse.db")
+    database = Database(path)
+    await database.connect()
+    await database.authorize_guild(40, None)
+    await database.update_settings(40, dj_role_id=7)
+    await database.close()
+
+    # Same object, fresh database file: stale cache entries must not survive.
+    database.path = str(tmp_path / "other.db")
+    await database.connect()
+    try:
+        assert await database.authorized_guilds() == frozenset()
+        assert (await database.get_settings(40)).dj_role_id is None
+    finally:
+        await database.close()
