@@ -93,27 +93,78 @@ joining can't expose the bot on an unapproved server.
 
 ## Quick start
 
-```bash
-git clone https://github.com/ArseniAliakseichyk/Discord_bot_music.git
-cd Discord_bot_music
+### 1. Discord Developer Portal
 
-cp .env.example .env        # fill in DISCORD_TOKEN and OWNER_IDS
-docker compose up -d        # starts Lavalink + the bot
+In the [Developer Portal](https://discord.com/developers/applications), on your
+application:
+
+- **Bot → Public Bot: off** (this is a private bot).
+- **Bot → Privileged Gateway Intents:** enable **Message Content** and
+  **Server Members**. Without them the bot exits at startup with
+  `PrivilegedIntentsRequired`.
+- Copy the bot **token** — you need it in the next step.
+
+### 2. Configure and start
+
+```bash
+git clone https://github.com/ArseniAliakseichyk/Discord_bot.git
+cd Discord_bot
+
+cp .env.example .env         # fill in DISCORD_TOKEN and OWNER_IDS
+mkdir -p data music          # see the note below — do this before the first run
+docker compose up -d --build # starts Lavalink, waits for it, then starts the bot
 ```
 
-Then authorize a server and you're ready:
+> **Create `data/` and `music/` yourself.** The bot container runs as an
+> unprivileged user (uid 1000). If Docker has to create these bind-mount
+> directories it creates them owned by *root*, and the bot then dies with
+> `sqlite3.OperationalError: unable to open database file`.
+> If your own uid is not 1000, build with your ids instead:
+> `docker compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)`
 
-1. In the [Developer Portal](https://discord.com/developers/applications), turn
-   **off** “Public Bot”, and enable the **Message Content** and **Server Members**
-   privileged intents.
-2. Invite the bot, then run `/authorize <guild_id>` as an owner (from any server
-   the bot is already in). The bot leaves guilds that aren't whitelisted.
-
-Run without Docker (needs a reachable Lavalink node and Python 3.12):
+Check that it came up:
 
 ```bash
-pip install -r requirements.txt
-python bot.py
+docker compose ps                 # both services should be "healthy"
+docker compose logs -f bot
+```
+
+A healthy startup logs, in order: `Database connected`, `Lavalink node
+registered`, `Loaded extension …` eight times, `Synced N application commands`,
+and `✅ Bot <name> is ready`.
+
+### 3. Whitelist your server — do this *before* inviting the bot
+
+This is a private bot: it **leaves any guild that is not on the whitelist**, both
+when it joins and on every startup. So authorizing after inviting does not work —
+the bot is already gone by the time you can type a command.
+
+1. Enable **Developer Mode** in Discord (User Settings → Advanced), right-click
+   your server → **Copy Server ID**.
+2. Authorize that ID, then invite the bot:
+   - **DM the bot** `/authorize <guild_id>` (owner only), or
+   - seed the database directly while the stack is stopped:
+     ```bash
+     docker compose stop bot
+     sqlite3 data/bot.db \
+       "INSERT OR IGNORE INTO authorized_guilds (guild_id, added_by, added_at)
+        VALUES (<guild_id>, 0, strftime('%s','now'));"
+     docker compose start bot
+     ```
+3. Now invite the bot to that server. It stays, and `/help` works.
+
+Once the bot is in one authorized server, you can manage the rest from there with
+`/authorize`, `/deauthorize` and `/servers`.
+
+### Running without Docker
+
+Needs Python 3.12 and a reachable Lavalink node. Point `LAVALINK_URI` at it
+(e.g. `http://localhost:2333`) and use a virtual environment:
+
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+venv/bin/python bot.py
 ```
 
 ## Configuration (`.env`)
