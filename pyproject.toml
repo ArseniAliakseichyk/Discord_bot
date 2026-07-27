@@ -1,4 +1,80 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "discord-music-bot"
+version = "1.0.0"
+description = "Private Discord music bot on discord.py and Lavalink/wavelink"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "discord.py==2.7.1",
+    "wavelink==3.5.2",
+    "aiosqlite>=0.20.0,<1.0",
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.5.2,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11",
+]
+
+[tool.setuptools]
+py-modules = ["bot", "config"]
+
+[tool.setuptools.packages.find]
+include = ["cogs*", "core*", "ui*", "utils*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["venv", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # import sorting
+    "UP",    # pyupgrade
+    "B",     # bugbear
+    "ASYNC", # async anti-patterns (blocking calls in coroutines)
+    "BLE",   # blind except
+    "RUF",
+]
+ignore = [
+    "E501",   # long lines are a formatter concern, not a linter one
+    "B008",   # discord.py declares ui.TextInput() as class attributes
+    "RUF001", # Cyrillic strings legitimately contain look-alike characters
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["BLE"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["bot.py", "config.py", "cogs", "core", "ui", "utils"]
+# The packages have no __init__.py, so without this mypy cannot tell top-level
+# bot.py apart from core/bot.py and refuses to run.
+mypy_path = "."
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true

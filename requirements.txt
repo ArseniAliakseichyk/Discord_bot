@@ -1,5 +1,8 @@
 discord.py==2.7.1
 wavelink==3.5.2
-aiosqlite>=0.20.0
-pydantic-settings>=2.5.2
-python-dotenv>=1.0.1
+# Upper bounds keep `docker compose build` reproducible: a new major release of
+# any of these would otherwise be pulled in silently on the next build.
+aiosqlite>=0.20.0,<1.0
+# Imported directly by config.py, not just transitively via pydantic-settings.
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5.2,<3.0

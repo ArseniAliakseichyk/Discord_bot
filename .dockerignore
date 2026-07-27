@@ -3,10 +3,26 @@
 __pycache__/
 *.py[cod]
 .env
+.env.example
 data/
 *.log
 tests/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .claude/
 .venv/
 venv/
+
+# Never bake credentials into an image layer: cookies.txt is a yt-dlp cookie jar
+# and is unused by the code, but COPY . . would ship it to anyone with the image.
+cookies.txt
+
+# Mounted as a volume at runtime; copying it would bloat the image.
+music/
+lavalink/plugins/
+
+# Docs and assets are not needed at runtime.
+*.md
+assets/
+LICENSE

@@ -1,34 +1,66 @@
 # Convenient self-host stack: the bot + a Lavalink audio node.
 # Quick start:
 #   1) cp .env.example .env   and fill in DISCORD_TOKEN / OWNER_IDS
-#   2) docker compose up -d
+#   2) mkdir -p data music    <- IMPORTANT, see below
+#   3) docker compose up -d --build
+#
+# Create ./data and ./music yourself before the first start. The bot container
+# runs as uid 1000 (not root); if Docker has to create these bind-mount sources
+# it makes them root-owned, and the bot then dies with
+# "sqlite3.OperationalError: unable to open database file".
+# If your own uid is not 1000:
+#   docker compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)
 services:
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4
     restart: unless-stopped
+    # Needed so the YouTube plugin can be downloaded into ./lavalink/plugins.
     user: "root"
     environment:
       - _JAVA_OPTIONS=-Xmx512m
       - SERVER_PORT=2333
+      # Read from the shell environment or ./.env. The bot reads the same value
+      # via env_file below, so keep LAVALINK_PASSWORD in .env — not just exported
+      # in your shell, or the two would disagree and auth would fail.
       - LAVALINK_SERVER_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins
       - ./music:/music:ro
+    healthcheck:
+      # /version requires the server password ($$ escapes to a literal $ for the
+      # shell); it only answers once the HTTP server is actually accepting calls.
+      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: $$LAVALINK_SERVER_PASSWORD\" http://localhost:2333/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     networks:
       - botnet
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   bot:
     build: .
     restart: unless-stopped
     env_file: .env
     depends_on:
-      - lavalink
+      lavalink:
+        # Wait for Lavalink to actually answer, not merely to be created.
+        condition: service_healthy
     volumes:
       - ./data:/app/data          # SQLite database + saved queues
       - ./music:/app/music:ro     # local audio files
     networks:
       - botnet
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   botnet:
