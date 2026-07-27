@@ -17,6 +17,11 @@ def format_duration(seconds: float | int) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def format_ms(milliseconds: float | int) -> str:
+    """Milliseconds -> ``MM:SS`` or ``H:MM:SS`` (wavelink reports track lengths in ms)."""
+    return format_duration(milliseconds / 1000)
+
+
 def format_user(user: discord.User | discord.Member) -> str:
     """``Name (@username)`` without the deprecated discriminator."""
     return f"{user.display_name} (@{user.name})"
