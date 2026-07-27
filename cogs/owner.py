@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
+from core.constants import EMBED_COLOR, EMBED_DESC_LIMIT, FIELD_VALUE_LIMIT
 from utils.checks import is_owner
 
 logger = logging.getLogger("bot.owner")
@@ -74,8 +75,13 @@ class Owner(commands.Cog):
         message = f"✅ Авторизация сервера `{gid}` снята."
         guild = self.bot.get_guild(gid)
         if guild is not None:
-            await guild.leave()
-            message += " Бот вышел из сервера."
+            try:
+                await guild.leave()
+            except discord.HTTPException:
+                logger.exception("Failed to leave guild %s", gid)
+                message += " Не удалось выйти из сервера — сделайте это вручную."
+            else:
+                message += " Бот вышел из сервера."
         await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(
@@ -84,7 +90,7 @@ class Owner(commands.Cog):
     @is_owner()
     async def servers(self, interaction: discord.Interaction) -> None:
         authorized = await self.bot.db.authorized_guilds()
-        embed = discord.Embed(title="🖥️ Серверы бота", color=0x2B2D31)
+        embed = discord.Embed(title="🖥️ Серверы бота", color=EMBED_COLOR)
         if not self.bot.guilds:
             embed.description = "Бот не состоит ни в одном сервере."
         else:
@@ -93,12 +99,12 @@ class Owner(commands.Cog):
                 f"(`{g.id}`) — {g.member_count} участников"
                 for g in self.bot.guilds
             ]
-            embed.description = "\n".join(lines)[:4000]
+            embed.description = "\n".join(lines)[:EMBED_DESC_LIMIT]
         extra = authorized - {g.id for g in self.bot.guilds}
         if extra:
             embed.add_field(
                 name="Авторизованы, но бот не в сервере",
-                value=", ".join(f"`{gid}`" for gid in extra)[:1024],
+                value=", ".join(f"`{gid}`" for gid in extra)[:FIELD_VALUE_LIMIT],
                 inline=False,
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)

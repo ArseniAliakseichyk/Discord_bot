@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 
 import discord
 from discord import app_commands
@@ -44,33 +46,54 @@ class MusicBot(commands.Bot):
         self.db = Database(settings.database_path)
         if settings.owner_ids:
             self.owner_ids = set(settings.owner_ids)
-        self.tree.on_error = self.on_app_command_error
+        self.tree.on_error = self.on_app_command_error  # type: ignore[method-assign]
+        self._log_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         logger.info("Database connected: %s", self.settings.database_path)
 
         if self.settings.log_channel_id:
-            attach_discord_handler(self, self.settings.log_channel_id)
+            self._log_task = attach_discord_handler(self, self.settings.log_channel_id)
 
         try:
             await connect_nodes(
                 self, self.settings.lavalink_uri, self.settings.lavalink_password
             )
         except Exception:
-            logger.exception("Failed to connect to Lavalink (wavelink will retry)")
+            # No node was registered, so wavelink has nothing to reconnect to:
+            # playback stays unavailable until the process is restarted.
+            logger.exception(
+                "Could not register a Lavalink node — music commands will not work "
+                "until the bot is restarted"
+            )
 
+        failed: list[str] = []
         for ext in INITIAL_EXTENSIONS:
             try:
                 await self.load_extension(ext)
                 logger.info("Loaded extension %s", ext)
             except Exception:
+                failed.append(ext)
                 logger.exception("Failed to load extension %s", ext)
 
-        synced = await self.tree.sync()
-        logger.info("Synced %d application commands", len(synced))
+        if failed:
+            # Syncing a partial tree would deregister the missing slash commands
+            # on Discord's side, so a single broken import must not touch it.
+            logger.error(
+                "Skipping command sync: %d extension(s) failed to load (%s)",
+                len(failed),
+                ", ".join(failed),
+            )
+            return
 
-    async def is_owner(self, user: discord.abc.User) -> bool:  # type: ignore[override]
+        try:
+            synced = await self.tree.sync()
+            logger.info("Synced %d application commands", len(synced))
+        except discord.HTTPException:
+            logger.exception("Failed to sync application commands")
+
+    async def is_owner(self, user: discord.abc.User) -> bool:
         if self.settings.owner_ids and user.id in self.settings.owner_ids:
             return True
         return await super().is_owner(user)
@@ -97,7 +120,7 @@ class MusicBot(commands.Bot):
         elif isinstance(error, app_commands.CheckFailure):
             message = "❌ Условие выполнения команды не соблюдено."
         else:
-            logger.exception("Unhandled app command error", exc_info=error)
+            logger.error("Unhandled app command error", exc_info=error)
             message = "⚠️ Произошла внутренняя ошибка."
 
         try:
@@ -105,9 +128,16 @@ class MusicBot(commands.Bot):
                 await interaction.followup.send(message, ephemeral=True)
             else:
                 await interaction.response.send_message(message, ephemeral=True)
+        except discord.NotFound:
+            logger.debug("Interaction expired before the error could be reported")
         except discord.HTTPException:
-            pass
+            logger.debug("Could not deliver the error message", exc_info=True)
 
     async def close(self) -> None:
+        if self._log_task is not None:
+            self._log_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._log_task
+            self._log_task = None
         await self.db.close()
         await super().close()

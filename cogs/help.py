@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
+from core.constants import EMBED_COLOR
 from utils.checks import guild_authorized
 
 
@@ -16,8 +17,8 @@ class Help(commands.Cog):
 
     @app_commands.command(name="help", description="Показать список команд")
     @guild_authorized()
-    async def help(self, interaction: discord.Interaction) -> None:
-        embed = discord.Embed(title="🎵 Доступные команды", color=0x2B2D31)
+    async def help_command(self, interaction: discord.Interaction) -> None:
+        embed = discord.Embed(title="🎵 Доступные команды", color=EMBED_COLOR)
         embed.add_field(
             name="🎶 Музыка",
             value=(

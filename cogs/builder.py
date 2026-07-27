@@ -2,23 +2,52 @@
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import logging
 import re
-from typing import Optional
 
 import discord
 from discord import TextStyle, app_commands, ui
 from discord.ext import commands
 
 from core.bot import MusicBot
+from core.constants import (
+    BUILDER_TIMEOUT,
+    IMAGE_ACTION_TIMEOUT,
+    MAX_EMBED_FIELDS,
+    PREVIEW_TIMEOUT,
+)
+from ui.views import EphemeralView
 from utils.checks import can_announce
+from utils.mentions import mentions_for_free_text, mentions_for_role
 from utils.validation import is_http_url
 
 logger = logging.getLogger("bot.builder")
 
-# Mentions are allowed only on the final publish send.
-_PUBLISH_MENTIONS = discord.AllowedMentions(everyone=True, roles=True, users=True)
+#: Zero-width space — an embed field needs a non-empty name/value to render.
+ZERO_WIDTH_SPACE = "​"
+
+
+def _publish_mentions(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    role: discord.Role | None,
+) -> discord.AllowedMentions:
+    """Mentions the invoker is actually entitled to, for the published message."""
+    if interaction.guild is None:
+        return discord.AllowedMentions.none()
+    free_text = mentions_for_free_text(interaction.user, channel, interaction.guild)
+    role_mentions = mentions_for_role(interaction.user, channel, role)
+    if free_text.roles is True or role_mentions.roles is True:
+        roles: list[discord.Role] | bool = True
+    else:
+        collected = list(free_text.roles) if isinstance(free_text.roles, list) else []
+        if isinstance(role_mentions.roles, list):
+            collected.extend(r for r in role_mentions.roles if r not in collected)
+        roles = collected or False
+    return discord.AllowedMentions(
+        everyone=free_text.everyone, roles=roles, users=True
+    )
 
 
 # =================================================================== #
@@ -64,10 +93,10 @@ PRESET_COLORS: dict[str, discord.Color] = {
 class FieldSelect(ui.Select):
     """Dropdown to pick a field to edit or delete."""
 
-    def __init__(self, view: "GigaBuilderView") -> None:
+    def __init__(self, view: GigaBuilderView) -> None:
         self.view_ref = view
         options = [
-            discord.SelectOption(label=f"Поле #{i + 1}: {field.name[:80]}", value=str(i))
+            discord.SelectOption(label=f"Поле #{i + 1}: {(field.name or '')[:80]}", value=str(i))
             for i, field in enumerate(view.embed.fields)
         ]
         if not options:
@@ -92,27 +121,36 @@ class FieldSelect(ui.Select):
 
         field_index = int(self.values[0])
         self.view_ref.selected_field_index = field_index
-        field_action_view = ui.View(timeout=180)
+        field_action_view = EphemeralView(timeout=IMAGE_ACTION_TIMEOUT)
 
-        edit_button = ui.Button(
+        edit_button: ui.Button = ui.Button(
             label="Редактировать", style=discord.ButtonStyle.primary, emoji="✏️"
         )
-        delete_button = ui.Button(
+        delete_button: ui.Button = ui.Button(
             label="Удалить", style=discord.ButtonStyle.danger, emoji="🗑️"
         )
 
-        async def edit_callback(i: discord.Interaction) -> None:
-            await i.response.send_modal(FieldModal(self.view_ref, is_editing=True))
-            await interaction.delete_original_response()
+        # `button_interaction` is the click on the button below; `interaction` is
+        # the select that opened this menu and owns the message being deleted.
+        async def edit_callback(button_interaction: discord.Interaction) -> None:
+            await button_interaction.response.send_modal(
+                FieldModal(self.view_ref, is_editing=True)
+            )
+            with contextlib.suppress(discord.HTTPException):
+                await interaction.delete_original_response()
 
-        async def delete_callback(i: discord.Interaction) -> None:
-            self.view_ref.embed.remove_field(self.view_ref.selected_field_index)
-            await i.response.defer()
+        async def delete_callback(button_interaction: discord.Interaction) -> None:
+            if self.view_ref.selected_field_index is not None:
+                self.view_ref.embed.remove_field(self.view_ref.selected_field_index)
+            await button_interaction.response.defer()
             await self.view_ref.update_preview()
-            await interaction.delete_original_response()
+            with contextlib.suppress(discord.HTTPException):
+                await interaction.delete_original_response()
 
-        edit_button.callback = edit_callback
-        delete_button.callback = delete_callback
+        # Attaching a closure as the callback is discord.py's documented way to
+        # build buttons dynamically; mypy cannot express it.
+        edit_button.callback = edit_callback  # type: ignore[method-assign,assignment]
+        delete_button.callback = delete_callback  # type: ignore[method-assign,assignment]
         field_action_view.add_item(edit_button)
         field_action_view.add_item(delete_button)
 
@@ -122,13 +160,14 @@ class FieldSelect(ui.Select):
             view=field_action_view,
             ephemeral=True,
         )
+        field_action_view.bind(interaction)
 
 
 # =================================================================== #
 #  2. Modals
 # =================================================================== #
 class FieldModal(ui.Modal, title="Настройка поля"):
-    def __init__(self, view: "GigaBuilderView", is_editing: bool = False) -> None:
+    def __init__(self, view: GigaBuilderView, is_editing: bool = False) -> None:
         super().__init__()
         self.view = view
         self.is_editing = is_editing
@@ -140,11 +179,11 @@ class FieldModal(ui.Modal, title="Настройка поля"):
         else:
             self.is_inline_input.default = "нет"
 
-    name = ui.TextInput(label="Заголовок поля", max_length=256, required=True)
-    value = ui.TextInput(
+    name: ui.TextInput = ui.TextInput(label="Заголовок поля", max_length=256, required=True)
+    value: ui.TextInput = ui.TextInput(
         label="Текст поля", style=TextStyle.paragraph, max_length=1024, required=True
     )
-    is_inline_input = ui.TextInput(
+    is_inline_input: ui.TextInput = ui.TextInput(
         label="В одну линию? (да/нет)", placeholder="нет", required=False, max_length=3
     )
 
@@ -166,7 +205,7 @@ class FieldModal(ui.Modal, title="Настройка поля"):
 
 
 class MainSettingsModal(ui.Modal, title="Основные настройки"):
-    def __init__(self, view: "GigaBuilderView") -> None:
+    def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
         self.view = view
         self.title_input.default = view.embed.title
@@ -176,15 +215,15 @@ class MainSettingsModal(ui.Modal, title="Основные настройки"):
             self.color_input.default = f"#{view.embed.color.value:06x}"
         self.timestamp_input.default = "да" if view.embed.timestamp else "нет"
 
-    title_input = ui.TextInput(label="Заголовок", required=False, max_length=256)
-    title_url_input = ui.TextInput(label="URL заголовка (необязательно)", required=False)
-    description_input = ui.TextInput(
+    title_input: ui.TextInput = ui.TextInput(label="Заголовок", required=False, max_length=256)
+    title_url_input: ui.TextInput = ui.TextInput(label="URL заголовка (необязательно)", required=False)
+    description_input: ui.TextInput = ui.TextInput(
         label="Описание", style=TextStyle.paragraph, required=False, max_length=4000
     )
-    color_input = ui.TextInput(
+    color_input: ui.TextInput = ui.TextInput(
         label="Цвет (HEX, #ff00ff)", required=False, max_length=7, placeholder="#008080"
     )
-    timestamp_input = ui.TextInput(
+    timestamp_input: ui.TextInput = ui.TextInput(
         label="Включить время? (да/нет)", placeholder="нет", required=False, max_length=3
     )
 
@@ -215,12 +254,12 @@ class MainSettingsModal(ui.Modal, title="Основные настройки"):
 
 
 class ContentModal(ui.Modal, title="Текст сообщения"):
-    def __init__(self, view: "GigaBuilderView") -> None:
+    def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
         self.view = view
         self.content_input.default = view.message_content
 
-    content_input = ui.TextInput(
+    content_input: ui.TextInput = ui.TextInput(
         label="Текст над эмбедом",
         style=TextStyle.paragraph,
         required=False,
@@ -235,28 +274,28 @@ class ContentModal(ui.Modal, title="Текст сообщения"):
         )
 
 
-class ReorderFieldsView(ui.View):
-    def __init__(self, builder_view: "GigaBuilderView") -> None:
-        super().__init__(timeout=300)
+class ReorderFieldsView(EphemeralView):
+    def __init__(self, builder_view: GigaBuilderView) -> None:
+        super().__init__(timeout=PREVIEW_TIMEOUT)
         self.builder_view = builder_view
         field_options = [
-            discord.SelectOption(label=f"Поле #{i + 1}: {f.name[:80]}", value=str(i))
+            discord.SelectOption(label=f"Поле #{i + 1}: {(f.name or '')[:80]}", value=str(i))
             for i, f in enumerate(builder_view.embed.fields)
         ]
-        self.from_select = ui.Select(
+        self.from_select: ui.Select = ui.Select(
             placeholder="Какое поле переместить?",
             options=field_options,
             min_values=1,
             max_values=1,
         )
-        self.to_select = ui.Select(
+        self.to_select: ui.Select = ui.Select(
             placeholder="Переместить ПЕРЕД каким полем?",
             options=field_options,
             min_values=1,
             max_values=1,
         )
-        self.from_select.callback = self.on_select
-        self.to_select.callback = self.on_select
+        self.from_select.callback = self.on_select  # type: ignore[method-assign]
+        self.to_select.callback = self.on_select  # type: ignore[method-assign]
         self.add_item(self.from_select)
         self.add_item(self.to_select)
 
@@ -286,7 +325,7 @@ class ReorderFieldsView(ui.View):
 
 
 class AuthorModal(ui.Modal, title="Настройка автора"):
-    def __init__(self, view: "GigaBuilderView") -> None:
+    def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
         self.view = view
         author = view.embed.author
@@ -295,9 +334,9 @@ class AuthorModal(ui.Modal, title="Настройка автора"):
             self.url.default = author.url
             self.icon_url.default = author.icon_url
 
-    name = ui.TextInput(label="Имя автора", required=False, max_length=256)
-    url = ui.TextInput(label="URL автора (необязательно)", required=False)
-    icon_url = ui.TextInput(label="URL иконки автора (необязательно)", required=False)
+    name: ui.TextInput = ui.TextInput(label="Имя автора", required=False, max_length=256)
+    url: ui.TextInput = ui.TextInput(label="URL автора (необязательно)", required=False)
+    icon_url: ui.TextInput = ui.TextInput(label="URL иконки автора (необязательно)", required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if self.name.value:
@@ -313,7 +352,7 @@ class AuthorModal(ui.Modal, title="Настройка автора"):
 
 
 class FooterModal(ui.Modal, title="Настройка футера"):
-    def __init__(self, view: "GigaBuilderView") -> None:
+    def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
         self.view = view
         footer = view.embed.footer
@@ -321,8 +360,8 @@ class FooterModal(ui.Modal, title="Настройка футера"):
             self.text.default = footer.text
             self.icon_url.default = footer.icon_url
 
-    text = ui.TextInput(label="Текст футера", required=False, max_length=2048)
-    icon_url = ui.TextInput(label="URL иконки футера (необязательно)", required=False)
+    text: ui.TextInput = ui.TextInput(label="Текст футера", required=False, max_length=2048)
+    icon_url: ui.TextInput = ui.TextInput(label="URL иконки футера (необязательно)", required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if self.text.value:
@@ -336,7 +375,7 @@ class FooterModal(ui.Modal, title="Настройка футера"):
 
 
 class ImageModal(ui.Modal, title="Изображение по URL"):
-    def __init__(self, view: "GigaBuilderView", image_type: str) -> None:
+    def __init__(self, view: GigaBuilderView, image_type: str) -> None:
         super().__init__()
         self.view = view
         self.image_type = image_type
@@ -345,7 +384,7 @@ class ImageModal(ui.Modal, title="Изображение по URL"):
         elif image_type == "thumbnail" and view.embed.thumbnail:
             self.url.default = view.embed.thumbnail.url
 
-    url = ui.TextInput(label="URL изображения", required=False)
+    url: ui.TextInput = ui.TextInput(label="URL изображения", required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         value = self.url.value.strip()
@@ -362,11 +401,11 @@ class ImageModal(ui.Modal, title="Изображение по URL"):
         await self.view.update_preview()
 
 
-class ImageActionView(ui.View):
+class ImageActionView(EphemeralView):
     """Choose the image source: upload a file or paste a URL."""
 
-    def __init__(self, builder_view: "GigaBuilderView", image_type: str) -> None:
-        super().__init__(timeout=180)
+    def __init__(self, builder_view: GigaBuilderView, image_type: str) -> None:
+        super().__init__(timeout=IMAGE_ACTION_TIMEOUT)
         self.builder_view = builder_view
         self.image_type = image_type
 
@@ -379,6 +418,7 @@ class ImageActionView(ui.View):
         prompt = await interaction.followup.send(
             f"**Отправьте {what} (картинку или .gif) в этот канал в течение 60 секунд.**",
             ephemeral=True,
+            wait=True,  # interaction followups always wait; be explicit for typing
         )
 
         def check(message: discord.Message) -> bool:
@@ -392,7 +432,7 @@ class ImageActionView(ui.View):
             msg = await self.builder_view.bot.wait_for(
                 "message", timeout=60.0, check=check
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await prompt.delete()
             await interaction.followup.send("⏰ Время вышло.", ephemeral=True)
             return
@@ -442,10 +482,11 @@ class ImageActionView(ui.View):
 
     @ui.button(label="Вставить URL", style=discord.ButtonStyle.primary, emoji="🔗")
     async def use_url(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        # No delete_original_response() here: send_modal() leaves no original
+        # response to delete, so the call always raised NotFound.
         await interaction.response.send_modal(
             ImageModal(self.builder_view, self.image_type)
         )
-        await interaction.delete_original_response()
         self.stop()
 
 
@@ -457,17 +498,17 @@ class GigaBuilderView(ui.View):
         self,
         author: discord.User | discord.Member,
         target_channel: discord.TextChannel,
-        role_to_mention: Optional[discord.Role],
+        role_to_mention: discord.Role | None,
         bot: MusicBot,
     ) -> None:
-        super().__init__(timeout=3600)
+        super().__init__(timeout=BUILDER_TIMEOUT)
         self.author = author
         self.target_channel = target_channel
         self.role_to_mention = role_to_mention
         self.bot = bot
-        self.message: Optional[discord.InteractionMessage] = None
-        self.selected_field_index: Optional[int] = None
-        self.message_content: Optional[str] = None
+        self.message: discord.InteractionMessage | None = None
+        self.selected_field_index: int | None = None
+        self.message_content: str | None = None
         self.embed = discord.Embed(
             title="Заголовок", description="Текст ...", color=discord.Color.blurple()
         )
@@ -518,84 +559,86 @@ class GigaBuilderView(ui.View):
         if self.message is None:
             return
         try:
-            for item in list(self.children):
-                if isinstance(item, FieldSelect):
-                    self.remove_item(item)
             await self.message.edit(embed=self.embed, view=self)
         except discord.NotFound:
             logger.warning("Builder preview message not found (deleted?)")
             self.stop()
 
     @ui.button(label="📝 Основное", style=discord.ButtonStyle.primary, row=0)
-    async def main_settings_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_modal(MainSettingsModal(self))
+    async def main_settings_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(MainSettingsModal(self))
 
     @ui.button(label="✍️ Автор", style=discord.ButtonStyle.secondary, row=0)
-    async def author_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_modal(AuthorModal(self))
+    async def author_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(AuthorModal(self))
 
     @ui.button(label="🦶 Футер", style=discord.ButtonStyle.secondary, row=0)
-    async def footer_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_modal(FooterModal(self))
+    async def footer_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(FooterModal(self))
 
     @ui.button(label="💬 Текст сообщения", style=discord.ButtonStyle.secondary, row=0)
-    async def content_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_modal(ContentModal(self))
+    async def content_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(ContentModal(self))
 
     @ui.button(label="🖼️ Изображение", style=discord.ButtonStyle.secondary, row=2)
-    async def image_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_message(
-            "Выберите источник изображения:",
-            view=ImageActionView(self, "image"),
-            ephemeral=True,
+    async def image_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        view = ImageActionView(self, "image")
+        await interaction.response.send_message(
+            "Выберите источник изображения:", view=view, ephemeral=True
         )
+        view.bind(interaction)
 
     @ui.button(label="📌 Превью", style=discord.ButtonStyle.secondary, row=2)
-    async def thumbnail_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        await i.response.send_message(
-            "Выберите источник миниатюры:",
-            view=ImageActionView(self, "thumbnail"),
-            ephemeral=True,
+    async def thumbnail_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        view = ImageActionView(self, "thumbnail")
+        await interaction.response.send_message(
+            "Выберите источник миниатюры:", view=view, ephemeral=True
         )
+        view.bind(interaction)
 
     @ui.button(label="[+] Добавить поле", style=discord.ButtonStyle.success, row=3)
-    async def add_field_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        if len(self.embed.fields) >= 25:
-            await i.response.send_message("❌ Лимит 25 полей.", ephemeral=True)
+    async def add_field_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        if len(self.embed.fields) >= MAX_EMBED_FIELDS:
+            await interaction.response.send_message(f"❌ Лимит {MAX_EMBED_FIELDS} полей.", ephemeral=True)
             return
-        await i.response.send_modal(FieldModal(self))
+        await interaction.response.send_modal(FieldModal(self))
 
     @ui.button(label="✏️ Изменить/Удалить", style=discord.ButtonStyle.primary, row=3)
     async def edit_delete_field_button(
-        self, i: discord.Interaction, _: ui.Button
+        self, interaction: discord.Interaction, _: ui.Button
     ) -> None:
         if not self.embed.fields:
-            await i.response.send_message("Нет полей.", ephemeral=True)
+            await interaction.response.send_message("Нет полей.", ephemeral=True)
             return
-        edit_view = ui.View(timeout=180)
+        edit_view = EphemeralView(timeout=IMAGE_ACTION_TIMEOUT)
         edit_view.add_item(FieldSelect(self))
-        await i.response.send_message("Выберите поле:", view=edit_view, ephemeral=True)
+        await interaction.response.send_message(
+            "Выберите поле:", view=edit_view, ephemeral=True
+        )
+        edit_view.bind(interaction)
 
     @ui.button(label="⇅ Порядок полей", style=discord.ButtonStyle.secondary, row=3)
-    async def reorder_fields_button(self, i: discord.Interaction, _: ui.Button) -> None:
+    async def reorder_fields_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
         if len(self.embed.fields) < 2:
-            await i.response.send_message("Нужно минимум 2 поля.", ephemeral=True)
+            await interaction.response.send_message("Нужно минимум 2 поля.", ephemeral=True)
             return
-        await i.response.send_message(
-            "Что и куда переместить:", view=ReorderFieldsView(self), ephemeral=True
+        view = ReorderFieldsView(self)
+        await interaction.response.send_message(
+            "Что и куда переместить:", view=view, ephemeral=True
         )
+        view.bind(interaction)
 
     @ui.button(label="➖ Разделитель", style=discord.ButtonStyle.secondary, row=3)
-    async def add_separator_button(self, i: discord.Interaction, _: ui.Button) -> None:
-        if len(self.embed.fields) >= 25:
-            await i.response.send_message("❌ Лимит 25 полей.", ephemeral=True)
+    async def add_separator_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        if len(self.embed.fields) >= MAX_EMBED_FIELDS:
+            await interaction.response.send_message(f"❌ Лимит {MAX_EMBED_FIELDS} полей.", ephemeral=True)
             return
-        self.embed.add_field(name="​", value="​", inline=False)
-        await i.response.defer()
+        self.embed.add_field(name=ZERO_WIDTH_SPACE, value=ZERO_WIDTH_SPACE, inline=False)
+        await interaction.response.defer()
         await self.update_preview()
 
     @ui.button(label="✅ Опубликовать", style=discord.ButtonStyle.success, row=4)
-    async def publish_button(self, i: discord.Interaction, _: ui.Button) -> None:
+    async def publish_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
         final_embed = self.embed.copy()
         if final_embed.description:
             final_embed.description = parse_text_colors(final_embed.description)
@@ -603,30 +646,68 @@ class GigaBuilderView(ui.View):
             final_embed.set_field_at(
                 idx,
                 name=field.name,
-                value=parse_text_colors(field.value),
+                value=parse_text_colors(field.value or ""),
                 inline=field.inline,
             )
 
-        mention = self.role_to_mention.mention if self.role_to_mention else ""
-        content = f"{mention} {self.message_content or ''}".strip()
-        await self.target_channel.send(
-            content=content or None,
-            embed=final_embed,
-            allowed_mentions=_PUBLISH_MENTIONS,
-        )
+        # Answer first — a slow send would otherwise miss the response window.
         self.clear_items()
-        await i.response.edit_message(
-            content="✅ **Анонс опубликован!**", view=None, embed=None
+        await interaction.response.edit_message(
+            content="📨 Публикую…", view=None, embed=None
         )
+
+        guild = interaction.guild
+        me = guild.me if guild is not None else None
+        if me is not None and not self.target_channel.permissions_for(me).send_messages:
+            await interaction.edit_original_response(
+                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            )
+            self.stop()
+            return
+
+        # message_content is free-form text typed by the user, so the mentions it
+        # may contain are constrained to what that user could ping themselves.
+        allowed = _publish_mentions(interaction, self.target_channel, self.role_to_mention)
+        mention = (
+            self.role_to_mention.mention
+            if self.role_to_mention and (allowed.everyone or allowed.roles)
+            else ""
+        )
+        content = f"{mention} {self.message_content or ''}".strip()
+        try:
+            await self.target_channel.send(
+                content=content or None,
+                embed=final_embed,
+                allowed_mentions=allowed,
+            )
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to publish the announcement")
+            await interaction.edit_original_response(
+                content="⚠️ Не удалось опубликовать анонс."
+            )
+        else:
+            await interaction.edit_original_response(content="✅ **Анонс опубликован!**")
         self.stop()
 
     @ui.button(label="❌ Отменить", style=discord.ButtonStyle.danger, row=4)
-    async def cancel_button(self, i: discord.Interaction, _: ui.Button) -> None:
+    async def cancel_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
         self.clear_items()
-        await i.response.edit_message(
+        await interaction.response.edit_message(
             content="❌ Конструктор закрыт.", view=None, embed=None
         )
         self.stop()
+
+    async def on_timeout(self) -> None:
+        self.clear_items()
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(
+                    content="⏰ Конструктор закрыт по таймауту.", view=None, embed=None
+                )
 
 
 # =================================================================== #
@@ -648,7 +729,7 @@ class Builder(commands.Cog):
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
-        mention_role: Optional[discord.Role] = None,
+        mention_role: discord.Role | None = None,
     ) -> None:
         view = GigaBuilderView(interaction.user, channel, mention_role, self.bot)
         await interaction.response.send_message(

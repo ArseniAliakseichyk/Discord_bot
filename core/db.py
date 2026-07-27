@@ -6,9 +6,14 @@ sessions + queues so playback can be restored after a restart.
 
 from __future__ import annotations
 
+import asyncio
 import time
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 import aiosqlite
 
@@ -42,7 +47,18 @@ CREATE TABLE IF NOT EXISTS saved_queues (
 );
 """
 
-_UNSET = object()
+class _Unset(Enum):
+    """Sentinel for "argument not supplied" that type checkers understand.
+
+    A bare ``object()`` would widen the parameter type to ``object`` and silently
+    accept anything; ``Literal[_Unset.token]`` keeps the real types checkable.
+    """
+
+    token = 0
+
+
+_UNSET = _Unset.token
+OptionalId = int | None | Literal[_Unset.token]
 
 
 @dataclass
@@ -75,18 +91,28 @@ class Database:
         self._authorized_cache: set[int] | None = None
 
     async def connect(self) -> None:
-        parent = Path(self.path).parent
-        if str(parent):
-            parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self.path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.executescript(SCHEMA)
-        await self._conn.commit()
+        """Open the connection and apply the schema. Safe to call twice."""
+        if self._conn is not None:  # already connected — don't leak the old handle
+            return
+        # mkdir is a blocking syscall; keep it off the event loop.
+        await asyncio.to_thread(Path(self.path).parent.mkdir, parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(self.path)
+        conn.row_factory = aiosqlite.Row
+        # WAL keeps external readers (e.g. the sqlite3 CLI) from hitting "database
+        # is locked"; busy_timeout covers the write lock.
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.executescript(SCHEMA)  # executescript commits implicitly
+        self._conn = conn
 
     async def close(self) -> None:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
+        # Drop the caches too, otherwise a later connect() serves data from the
+        # previous database file.
+        self._settings_cache.clear()
+        self._authorized_cache = None
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -94,15 +120,32 @@ class Database:
             raise RuntimeError("Database is not connected")
         return self._conn
 
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Commit on success, roll back on failure.
+
+        Without the rollback a failed multi-statement write leaves the shared
+        connection mid-transaction, and the next commit() from any other method
+        would flush those partial statements.
+        """
+        conn = self.conn
+        try:
+            yield conn
+        except BaseException:
+            await conn.rollback()
+            raise
+        await conn.commit()
+
     # ------------------------------------------------------------------ #
     #  Authorized guilds
     # ------------------------------------------------------------------ #
-    async def authorized_guilds(self) -> set[int]:
+    async def authorized_guilds(self) -> frozenset[int]:
+        """Return the whitelist. Frozen so callers cannot corrupt the cache."""
         if self._authorized_cache is None:
             async with self.conn.execute("SELECT guild_id FROM authorized_guilds") as cur:
                 rows = await cur.fetchall()
             self._authorized_cache = {row["guild_id"] for row in rows}
-        return self._authorized_cache
+        return frozenset(self._authorized_cache)
 
     async def is_authorized(self, guild_id: int) -> bool:
         return guild_id in await self.authorized_guilds()
@@ -111,21 +154,21 @@ class Database:
         """Return True if the guild was newly added."""
         if await self.is_authorized(guild_id):
             return False
-        await self.conn.execute(
-            "INSERT OR IGNORE INTO authorized_guilds (guild_id, added_by, added_at) "
-            "VALUES (?, ?, ?)",
-            (guild_id, added_by, int(time.time())),
-        )
-        await self.conn.commit()
+        async with self._transaction() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO authorized_guilds (guild_id, added_by, added_at) "
+                "VALUES (?, ?, ?)",
+                (guild_id, added_by, int(time.time())),
+            )
         if self._authorized_cache is not None:
             self._authorized_cache.add(guild_id)
         return True
 
     async def deauthorize_guild(self, guild_id: int) -> bool:
-        cur = await self.conn.execute(
-            "DELETE FROM authorized_guilds WHERE guild_id = ?", (guild_id,)
-        )
-        await self.conn.commit()
+        async with self._transaction() as conn:
+            cur = await conn.execute(
+                "DELETE FROM authorized_guilds WHERE guild_id = ?", (guild_id,)
+            )
         if self._authorized_cache is not None:
             self._authorized_cache.discard(guild_id)
         return cur.rowcount > 0
@@ -134,9 +177,13 @@ class Database:
     #  Guild settings
     # ------------------------------------------------------------------ #
     async def get_settings(self, guild_id: int) -> GuildSettings:
+        """Return the guild's settings.
+
+        Always a copy: callers must not be able to mutate the cache in place.
+        """
         cached = self._settings_cache.get(guild_id)
         if cached is not None:
-            return cached
+            return replace(cached)
         async with self.conn.execute(
             "SELECT dj_role_id, command_channel_id, default_volume "
             "FROM guild_settings WHERE guild_id = ?",
@@ -150,41 +197,48 @@ class Database:
             default_volume=row["default_volume"] if row else None,
         )
         self._settings_cache[guild_id] = settings
-        return settings
+        return replace(settings)
 
     async def update_settings(
         self,
         guild_id: int,
         *,
-        dj_role_id: int | None | object = _UNSET,
-        command_channel_id: int | None | object = _UNSET,
-        default_volume: int | None | object = _UNSET,
+        dj_role_id: OptionalId = _UNSET,
+        command_channel_id: OptionalId = _UNSET,
+        default_volume: OptionalId = _UNSET,
     ) -> GuildSettings:
-        settings = await self.get_settings(guild_id)
-        if dj_role_id is not _UNSET:
-            settings.dj_role_id = dj_role_id  # type: ignore[assignment]
-        if command_channel_id is not _UNSET:
-            settings.command_channel_id = command_channel_id  # type: ignore[assignment]
-        if default_volume is not _UNSET:
-            settings.default_volume = default_volume  # type: ignore[assignment]
-        await self.conn.execute(
-            """INSERT INTO guild_settings
-                   (guild_id, dj_role_id, command_channel_id, default_volume)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   dj_role_id         = excluded.dj_role_id,
-                   command_channel_id = excluded.command_channel_id,
-                   default_volume     = excluded.default_volume""",
-            (
-                guild_id,
-                settings.dj_role_id,
-                settings.command_channel_id,
-                settings.default_volume,
+        """Apply the supplied fields. The cache is updated only after the write."""
+        current = await self.get_settings(guild_id)
+        updated = replace(
+            current,
+            dj_role_id=current.dj_role_id if dj_role_id is _UNSET else dj_role_id,
+            command_channel_id=(
+                current.command_channel_id
+                if command_channel_id is _UNSET
+                else command_channel_id
+            ),
+            default_volume=(
+                current.default_volume if default_volume is _UNSET else default_volume
             ),
         )
-        await self.conn.commit()
-        self._settings_cache[guild_id] = settings
-        return settings
+        async with self._transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings
+                       (guild_id, dj_role_id, command_channel_id, default_volume)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       dj_role_id         = excluded.dj_role_id,
+                       command_channel_id = excluded.command_channel_id,
+                       default_volume     = excluded.default_volume""",
+                (
+                    guild_id,
+                    updated.dj_role_id,
+                    updated.command_channel_id,
+                    updated.default_volume,
+                ),
+            )
+        self._settings_cache[guild_id] = updated
+        return replace(updated)
 
     # ------------------------------------------------------------------ #
     #  Sessions and saved queues (for restart recovery)
@@ -196,25 +250,25 @@ class Database:
         text_channel_id: int | None,
         tracks: list[SavedTrack],
     ) -> None:
-        await self.conn.execute(
-            """INSERT INTO player_sessions (guild_id, voice_channel_id, text_channel_id)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   voice_channel_id = excluded.voice_channel_id,
-                   text_channel_id  = excluded.text_channel_id""",
-            (guild_id, voice_channel_id, text_channel_id),
-        )
-        await self.conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))
-        if tracks:
-            await self.conn.executemany(
-                "INSERT INTO saved_queues (guild_id, position, uri, requester, avatar) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [
-                    (guild_id, i, t.uri, t.requester, t.avatar)
-                    for i, t in enumerate(tracks)
-                ],
+        async with self._transaction() as conn:
+            await conn.execute(
+                """INSERT INTO player_sessions (guild_id, voice_channel_id, text_channel_id)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       voice_channel_id = excluded.voice_channel_id,
+                       text_channel_id  = excluded.text_channel_id""",
+                (guild_id, voice_channel_id, text_channel_id),
             )
-        await self.conn.commit()
+            await conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))
+            if tracks:
+                await conn.executemany(
+                    "INSERT INTO saved_queues (guild_id, position, uri, requester, avatar) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (guild_id, i, t.uri, t.requester, t.avatar)
+                        for i, t in enumerate(tracks)
+                    ],
+                )
 
     async def load_sessions(self) -> list[PlayerSession]:
         async with self.conn.execute(
@@ -243,8 +297,8 @@ class Database:
         ]
 
     async def clear_session(self, guild_id: int) -> None:
-        await self.conn.execute(
-            "DELETE FROM player_sessions WHERE guild_id = ?", (guild_id,)
-        )
-        await self.conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))
-        await self.conn.commit()
+        async with self._transaction() as conn:
+            await conn.execute(
+                "DELETE FROM player_sessions WHERE guild_id = ?", (guild_id,)
+            )
+            await conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))

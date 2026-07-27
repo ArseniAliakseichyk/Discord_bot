@@ -17,6 +17,9 @@ logger = logging.getLogger("bot.events")
 class Events(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
+        # on_ready fires again after every gateway reconnect; audit only once so
+        # the "unauthorized" notice is not re-posted on every reconnect.
+        self._audited = False
 
     def is_excluded(self, user: discord.abc.User) -> bool:
         return user.id in self.bot.settings.excluded_user_ids
@@ -27,6 +30,9 @@ class Events(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         logger.info("✅ Bot %s is ready (%d guilds)", self.bot.user, len(self.bot.guilds))
+        if self._audited:
+            return
+        self._audited = True
         await self._audit_guilds()
 
     async def _audit_guilds(self) -> None:
@@ -69,7 +75,10 @@ class Events(commands.Cog):
                 )
             except discord.HTTPException:
                 pass
-        await guild.leave()
+        try:
+            await guild.leave()
+        except discord.HTTPException:
+            logger.exception("Failed to leave guild %s (%s)", guild.name, guild.id)
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
@@ -82,6 +91,7 @@ class Events(commands.Cog):
     async def on_wavelink_node_ready(
         self, payload: wavelink.NodeReadyEventPayload
     ) -> None:
+        # cogs.music also listens for this event, to restore saved sessions.
         logger.info(
             "🟢 Lavalink node ready: %s (resumed=%s)",
             payload.node.identifier,
@@ -96,15 +106,23 @@ class Events(commands.Cog):
         if message.author.bot or self.is_excluded(message.author):
             return
         where = f"#{message.channel} @ {message.guild}"
-        logger.info("📩 %s in %s: %s", format_user(message.author), where, message.content)
+        # Message bodies are personal data and go to DEBUG only; INFO keeps the
+        # metadata so bot.log stays useful without transcribing every chat.
+        logger.info("📩 %s in %s (%d chars)", format_user(message.author), where, len(message.content))
+        logger.debug("📩 %s in %s: %s", format_user(message.author), where, message.content)
 
     @commands.Cog.listener()
     async def on_message_edit(
         self, before: discord.Message, after: discord.Message
     ) -> None:
-        if before.author.bot or self.is_excluded(before.author) or before.content == after.content:
+        if (
+            before.author.bot
+            or self.is_excluded(before.author)
+            or before.content == after.content
+        ):
             return
-        logger.info(
+        logger.info("✏️ %s edited a message in #%s", format_user(before.author), before.channel)
+        logger.debug(
             "✏️ %s edited in #%s:\n  before: %s\n  after:  %s",
             format_user(before.author),
             before.channel,
@@ -117,6 +135,9 @@ class Events(commands.Cog):
         if message.author.bot or self.is_excluded(message.author):
             return
         logger.info(
+            "🗑️ Deleted message by %s in #%s", format_user(message.author), message.channel
+        )
+        logger.debug(
             "🗑️ Deleted message by %s in #%s: %s",
             format_user(message.author),
             message.channel,

@@ -6,8 +6,10 @@ Per-guild state lives on the wavelink ``Player`` (one per guild) and its
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
+import sqlite3
+from pathlib import Path
 
 import discord
 import wavelink
@@ -15,11 +17,20 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
-from core.db import SavedTrack
+from core.constants import (
+    EMBED_COLOR,
+    EMBED_DESC_LIMIT,
+    MSG_BOT_NOT_CONNECTED,
+    MSG_JOIN_VOICE_FIRST,
+    MSG_NOTHING_PLAYING,
+    MSG_QUEUE_EMPTY,
+)
+from core.db import PlayerSession, SavedTrack
 from ui.controls import NowPlayingControls, now_playing_embed
 from ui.search import SearchView
 from utils.checks import guild_authorized, has_dj, in_command_channel
 from utils.formatting import format_duration
+from utils.player import connect_and_configure, player_of
 
 logger = logging.getLogger("bot.music")
 
@@ -34,21 +45,19 @@ class Music(commands.Cog):
         self.now_messages: dict[int, discord.Message] = {}
         self.home_channels: dict[int, int] = {}
         self._restored = False
+        # Guilds currently being torn down by stop_player: the forced skip fires
+        # on_wavelink_track_end, which would otherwise re-save the session we are
+        # about to delete.
+        self._stopping: set[int] = set()
 
     # ------------------------------------------------------------------ #
     #  Helpers
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def player_of(guild: discord.Guild | None) -> wavelink.Player | None:
-        if guild is None:
-            return None
-        return guild.voice_client  # type: ignore[return-value]
-
     async def ensure_player(
         self, interaction: discord.Interaction
     ) -> wavelink.Player | None:
         """Return the guild player, connecting to the user's channel if needed."""
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is not None:
             return player
         user = interaction.user
@@ -58,20 +67,7 @@ class Music(commands.Cog):
             or user.voice.channel is None
         ):
             return None
-        player = await user.voice.channel.connect(cls=wavelink.Player)
-        player.autoplay = wavelink.AutoPlayMode.partial
-        player.inactive_timeout = self.bot.settings.inactive_timeout
-        settings = await self.bot.db.get_settings(interaction.guild.id)
-        volume = (
-            settings.default_volume
-            if settings.default_volume is not None
-            else self.bot.settings.default_volume
-        )
-        try:
-            await player.set_volume(volume)
-        except Exception:
-            logger.exception("Failed to set initial volume")
-        return player
+        return await connect_and_configure(user.voice.channel, self.bot)
 
     @staticmethod
     def _set_requester(track: wavelink.Playable, member: discord.Member) -> None:
@@ -86,17 +82,35 @@ class Music(commands.Cog):
             return False
         return track.length / 1000 > max_seconds
 
+    def _local_file(self, query: str) -> str | None:
+        """Map ``query`` to a path inside the Lavalink music volume, if it is one.
+
+        The query comes straight from a user, so the resolved path must be
+        confined to ``music_folder``: without the containment check a query like
+        ``../../etc/passwd`` would escape it.
+        """
+        base = Path(self.bot.settings.music_folder).resolve()
+        try:
+            candidate = (base / query).resolve()
+            relative = candidate.relative_to(base)
+        except (ValueError, OSError):  # outside the base, or an unusable path
+            return None
+        if not candidate.is_file():
+            return None
+        container_dir = self.bot.settings.lavalink_local_dir.rstrip("/")
+        return f"{container_dir}/{relative.as_posix()}"
+
     async def _resolve(self, query: str) -> wavelink.Search:
-        local_path = os.path.join(self.bot.settings.music_folder, query)
-        if os.path.isfile(local_path):
-            container_path = f"{self.bot.settings.lavalink_local_dir.rstrip('/')}/{query}"
-            return await wavelink.Playable.search(container_path)
+        # is_file() hits the filesystem; keep the blocking syscall off the loop.
+        local_path = await asyncio.to_thread(self._local_file, query)
+        if local_path is not None:
+            return await wavelink.Playable.search(local_path)
         return await wavelink.Playable.search(
             query, source=wavelink.TrackSource.YouTube
         )
 
     async def maybe_start(self, player: wavelink.Player) -> None:
-        if not player.playing and not player.queue.is_empty():
+        if not player.playing and not player.queue.is_empty:
             await player.play(player.queue.get())
 
     @staticmethod
@@ -111,6 +125,8 @@ class Music(commands.Cog):
     async def persist_queue(self, player: wavelink.Player) -> None:
         if player.guild is None or player.channel is None:
             return
+        if player.guild.id in self._stopping:
+            return  # teardown in progress; the session row is being deleted
         tracks: list[SavedTrack] = []
         if player.current is not None and player.current.uri:
             tracks.append(self._to_saved(player.current))
@@ -120,10 +136,12 @@ class Music(commands.Cog):
             await self.bot.db.save_session(
                 player.guild.id, player.channel.id, text_channel_id, tracks
             )
-        except Exception:
+        except sqlite3.Error:
             logger.exception("Failed to persist session")
 
     async def refresh_now_message(self, player: wavelink.Player) -> None:
+        if player.guild is None:
+            return
         message = self.now_messages.get(player.guild.id)
         if message is not None and player.current is not None:
             try:
@@ -142,34 +160,48 @@ class Music(commands.Cog):
             except discord.HTTPException:
                 pass
 
+    def _forget_guild(self, guild_id: int) -> None:
+        """Drop per-guild bookkeeping so the dicts don't grow without bound."""
+        self.home_channels.pop(guild_id, None)
+        self.now_messages.pop(guild_id, None)
+        self._stopping.discard(guild_id)
+
     async def stop_player(self, player: wavelink.Player) -> None:
+        if player.guild is None:
+            return
         guild_id = player.guild.id
-        player.autoplay = wavelink.AutoPlayMode.partial
-        player.queue.clear()
+        self._stopping.add(guild_id)
         try:
+            player.autoplay = wavelink.AutoPlayMode.partial
+            player.queue.clear()
             player.auto_queue.clear()
-        except Exception:
-            pass
-        if player.playing or player.current is not None:
-            await player.skip(force=True)
-        await self.clear_now_message(guild_id)
-        await self.bot.db.clear_session(guild_id)
+            if player.playing or player.current is not None:
+                await player.skip(force=True)
+            await self.clear_now_message(guild_id)
+            await self.bot.db.clear_session(guild_id)
+        finally:
+            self._stopping.discard(guild_id)
 
     async def add_and_play(
         self,
         interaction: discord.Interaction,
         track: wavelink.Playable,
         member: discord.Member,
-    ) -> None:
-        """Used by the search menu: enqueue a chosen track and start if idle."""
+    ) -> bool:
+        """Enqueue a chosen track and start if idle. False if there is no player.
+
+        The search menu relies on the return value: it must not report success
+        when the requester has meanwhile left the voice channel.
+        """
         player = await self.ensure_player(interaction)
         if player is None or interaction.guild is None:
-            return
+            return False
         self.home_channels[interaction.guild.id] = interaction.channel_id  # type: ignore[assignment]
         self._set_requester(track, member)
         player.queue.put(track)
         await self.maybe_start(player)
         await self.persist_queue(player)
+        return True
 
     # ------------------------------------------------------------------ #
     #  Commands
@@ -178,21 +210,23 @@ class Music(commands.Cog):
         name="play", description="Воспроизвести трек/плейлист с YouTube или локальный файл"
     )
     @app_commands.describe(query="Ссылка, поисковый запрос или имя локального файла")
+    # Decorators evaluate bottom-up, so the cooldown listed first runs last:
+    # an unauthorized guild is rejected before the bucket is consumed.
     @app_commands.checks.cooldown(1, 5.0)
     @guild_authorized()
     @in_command_channel()
     async def play(self, interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer()
         player = await self.ensure_player(interaction)
-        if player is None:
-            await interaction.followup.send("❌ Сначала зайдите в голосовой канал.")
+        if player is None or interaction.guild is None:
+            await interaction.followup.send(MSG_JOIN_VOICE_FIRST)
             return
         self.home_channels[interaction.guild.id] = interaction.channel_id  # type: ignore[assignment]
 
         try:
             result = await self._resolve(query.strip())
-        except Exception:
-            logger.exception("Search failed for %r", query)
+        except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
+            logger.warning("Search failed for %r", query, exc_info=True)
             await interaction.followup.send("⚠️ Не удалось найти трек.")
             return
 
@@ -227,6 +261,8 @@ class Music(commands.Cog):
 
     @app_commands.command(name="search", description="Найти трек и выбрать из списка")
     @app_commands.describe(query="Поисковый запрос")
+    # Decorators evaluate bottom-up, so the cooldown listed first runs last:
+    # an unauthorized guild is rejected before the bucket is consumed.
     @app_commands.checks.cooldown(1, 5.0)
     @guild_authorized()
     @in_command_channel()
@@ -236,14 +272,14 @@ class Music(commands.Cog):
             not isinstance(interaction.user, discord.Member)
             or interaction.user.voice is None
         ):
-            await interaction.followup.send("❌ Сначала зайдите в голосовой канал.")
+            await interaction.followup.send(MSG_JOIN_VOICE_FIRST)
             return
         try:
             result = await wavelink.Playable.search(
                 query, source=wavelink.TrackSource.YouTube
             )
-        except Exception:
-            logger.exception("Search failed for %r", query)
+        except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
+            logger.warning("Search failed for %r", query, exc_info=True)
             await interaction.followup.send("⚠️ Ошибка поиска.")
             return
         if isinstance(result, wavelink.Playlist):
@@ -261,10 +297,10 @@ class Music(commands.Cog):
     @app_commands.command(name="now", description="Показать текущий трек")
     @guild_authorized()
     async def now(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is None or player.current is None:
             await interaction.response.send_message(
-                "❌ Сейчас ничего не играет.", ephemeral=True
+                MSG_NOTHING_PLAYING, ephemeral=True
             )
             return
         await interaction.response.send_message(
@@ -274,9 +310,9 @@ class Music(commands.Cog):
     @app_commands.command(name="queue", description="Показать очередь")
     @guild_authorized()
     async def queue(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
-        if player is None or (player.queue.is_empty() and player.current is None):
-            await interaction.response.send_message("🚫 Очередь пуста.", ephemeral=True)
+        player = player_of(interaction.guild)
+        if player is None or (player.queue.is_empty and player.current is None):
+            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
             return
         lines: list[str] = []
         if player.current is not None:
@@ -287,7 +323,7 @@ class Music(commands.Cog):
                 break
             lines.append(f"`{i}.` {track.title}")
         embed = discord.Embed(
-            title="📜 Очередь", description="\n".join(lines)[:4000], color=0x2B2D31
+            title="📜 Очередь", description="\n".join(lines)[:EMBED_DESC_LIMIT], color=EMBED_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -296,39 +332,39 @@ class Music(commands.Cog):
     @has_dj()
     @in_command_channel()
     async def shuffle(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
-        if player is not None and not player.queue.is_empty():
+        player = player_of(interaction.guild)
+        if player is not None and not player.queue.is_empty:
             player.queue.shuffle()
             await self.persist_queue(player)
             await interaction.response.send_message("🔀 Очередь перемешана.")
         else:
-            await interaction.response.send_message("🚫 Очередь пуста.", ephemeral=True)
+            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
 
     @app_commands.command(name="clear", description="Очистить очередь")
     @guild_authorized()
     @has_dj()
     @in_command_channel()
     async def clear(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
-        if player is not None and not player.queue.is_empty():
+        player = player_of(interaction.guild)
+        if player is not None and not player.queue.is_empty:
             player.queue.clear()
             await self.persist_queue(player)
             await interaction.response.send_message("🧹 Очередь очищена.")
         else:
-            await interaction.response.send_message("🚫 Очередь пуста.", ephemeral=True)
+            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
 
     @app_commands.command(name="skip", description="Пропустить текущий трек")
     @guild_authorized()
     @has_dj()
     @in_command_channel()
     async def skip(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is not None and (player.playing or player.current is not None):
             await player.skip(force=True)
             await interaction.response.send_message("⏭️ Пропущено.")
         else:
             await interaction.response.send_message(
-                "❌ Сейчас ничего не играет.", ephemeral=True
+                MSG_NOTHING_PLAYING, ephemeral=True
             )
 
     @app_commands.command(name="pause", description="Пауза")
@@ -336,7 +372,7 @@ class Music(commands.Cog):
     @has_dj()
     @in_command_channel()
     async def pause(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is not None and player.playing and not player.paused:
             await player.pause(True)
             await self.refresh_now_message(player)
@@ -351,7 +387,7 @@ class Music(commands.Cog):
     @has_dj()
     @in_command_channel()
     async def resume(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is not None and player.paused:
             await player.pause(False)
             await self.refresh_now_message(player)
@@ -366,7 +402,7 @@ class Music(commands.Cog):
     @has_dj()
     @in_command_channel()
     async def stop(self, interaction: discord.Interaction) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is not None:
             await self.stop_player(player)
             await interaction.response.send_message(
@@ -374,7 +410,7 @@ class Music(commands.Cog):
             )
         else:
             await interaction.response.send_message(
-                "❌ Бот не в голосовом канале.", ephemeral=True
+                MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
 
     @app_commands.command(name="autoplay", description="Радио: автоплей похожих треков")
@@ -391,10 +427,10 @@ class Music(commands.Cog):
     async def autoplay(
         self, interaction: discord.Interaction, mode: app_commands.Choice[str]
     ) -> None:
-        player = self.player_of(interaction.guild)
+        player = player_of(interaction.guild)
         if player is None:
             await interaction.response.send_message(
-                "❌ Бот не в голосовом канале.", ephemeral=True
+                MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
             return
         if mode.value == "on":
@@ -447,6 +483,7 @@ class Music(commands.Cog):
         await self.clear_now_message(guild_id)
         await player.disconnect()
         await self.bot.db.clear_session(guild_id)
+        self._forget_guild(guild_id)
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if isinstance(channel, discord.abc.Messageable):
             try:
@@ -470,12 +507,13 @@ class Music(commands.Cog):
         ):
             await self.clear_now_message(member.guild.id)
             await self.bot.db.clear_session(member.guild.id)
+            self._forget_guild(member.guild.id)
             return
 
         # A user moved: if the bot is now alone, leave.
         if before.channel == after.channel:
             return
-        player = self.player_of(member.guild)
+        player = player_of(member.guild)
         if player is None or player.channel is None:
             return
         if not any(not m.bot for m in player.channel.members):
@@ -483,6 +521,11 @@ class Music(commands.Cog):
             await self.clear_now_message(guild_id)
             await player.disconnect()
             await self.bot.db.clear_session(guild_id)
+            self._forget_guild(guild_id)
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        self._forget_guild(guild.id)
 
     # ------------------------------------------------------------------ #
     #  Restart recovery
@@ -499,7 +542,7 @@ class Music(commands.Cog):
     async def _restore_sessions(self) -> None:
         try:
             sessions = await self.bot.db.load_sessions()
-        except Exception:
+        except sqlite3.Error:
             logger.exception("Failed to load sessions")
             return
         for session in sessions:
@@ -508,7 +551,7 @@ class Music(commands.Cog):
             except Exception:
                 logger.exception("Failed to restore guild %s", session.guild_id)
 
-    async def _restore_one(self, session) -> None:
+    async def _restore_one(self, session: PlayerSession) -> None:
         guild = self.bot.get_guild(session.guild_id)
         channel = guild.get_channel(session.voice_channel_id) if guild else None
         if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
@@ -523,26 +566,19 @@ class Music(commands.Cog):
             await self.bot.db.clear_session(session.guild_id)
             return
 
-        player: wavelink.Player = await channel.connect(cls=wavelink.Player)
-        player.autoplay = wavelink.AutoPlayMode.partial
-        player.inactive_timeout = self.bot.settings.inactive_timeout
-        settings = await self.bot.db.get_settings(session.guild_id)
-        volume = (
-            settings.default_volume
-            if settings.default_volume is not None
-            else self.bot.settings.default_volume
-        )
-        try:
-            await player.set_volume(volume)
-        except Exception:
-            logger.exception("Failed to set volume on restore")
+        player = await connect_and_configure(channel, self.bot)
         if session.text_channel_id:
             self.home_channels[session.guild_id] = session.text_channel_id
 
         for item in saved:
             try:
                 found = await wavelink.Playable.search(item.uri)
-            except Exception:
+            except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
+                logger.warning(
+                    "Skipping unresolvable track %r for guild %s",
+                    item.uri,
+                    session.guild_id,
+                )
                 continue
             if isinstance(found, wavelink.Playlist):
                 found = found.tracks

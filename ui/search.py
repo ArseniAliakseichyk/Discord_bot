@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import discord
 import wavelink
 
-from utils.formatting import format_duration
+from core.constants import MSG_JOIN_VOICE_FIRST, SEARCH_TIMEOUT, SELECT_LABEL_LIMIT
+from utils.formatting import format_ms
 
 if TYPE_CHECKING:
     from cogs.music import Music
@@ -18,13 +19,13 @@ class SearchSelect(discord.ui.Select):
         self.tracks = tracks
         options: list[discord.SelectOption] = []
         for i, track in enumerate(tracks):
-            duration = "LIVE" if track.is_stream else format_duration(track.length / 1000)
+            duration = "LIVE" if track.is_stream else format_ms(track.length)
             description = f"{track.author} • {duration}" if track.author else duration
             options.append(
                 discord.SelectOption(
-                    label=track.title[:100],
+                    label=track.title[:SELECT_LABEL_LIMIT],
                     value=str(i),
-                    description=description[:100],
+                    description=description[:SELECT_LABEL_LIMIT],
                 )
             )
         super().__init__(
@@ -32,15 +33,18 @@ class SearchSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        view: "SearchView" = self.view  # type: ignore[assignment]
+        view: SearchView = self.view  # type: ignore[assignment]
         track = self.tracks[int(self.values[0])]
         await interaction.response.defer()
-        await view.cog.add_and_play(interaction, track, view.requester)
+        # add_and_play returns False when the requester is no longer in a voice
+        # channel — don't claim success in that case.
+        queued = await view.cog.add_and_play(interaction, track, view.requester)
+        content = (
+            f"✅ Добавлено: **{track.title}**" if queued else MSG_JOIN_VOICE_FIRST
+        )
         if view.message is not None:
             try:
-                await view.message.edit(
-                    content=f"✅ Добавлено: **{track.title}**", view=None
-                )
+                await view.message.edit(content=content, view=None)
             except discord.HTTPException:
                 pass
         view.stop()
@@ -49,11 +53,11 @@ class SearchSelect(discord.ui.Select):
 class SearchView(discord.ui.View):
     def __init__(
         self,
-        cog: "Music",
+        cog: Music,
         tracks: list[wavelink.Playable],
         requester: discord.Member,
     ) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=SEARCH_TIMEOUT)
         self.cog = cog
         self.requester = requester
         self.message: discord.Message | None = None

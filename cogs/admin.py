@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import re
 
 import discord
@@ -9,11 +11,29 @@ from discord import TextStyle, app_commands, ui
 from discord.ext import commands
 
 from core.bot import MusicBot
+from core.constants import PREVIEW_TIMEOUT
+from ui.views import disable_all
 from utils.checks import can_announce
+from utils.mentions import mentions_for_role
 from utils.validation import is_http_url
 
-# Mentions are allowed only on the final announcement send.
-_ANNOUNCE_MENTIONS = discord.AllowedMentions(everyone=True, roles=True, users=True)
+logger = logging.getLogger("bot.admin")
+
+DEFAULT_ANNOUNCE_TITLE = "📢 Официальное объявление"
+
+
+def parse_hex_color(value: str) -> int | None:
+    """``#RGB`` / ``#RRGGBB`` -> an int, or ``None`` if it is not a hex colour.
+
+    The short form must be expanded first: ``int("f00", 16)`` is 0x000F00
+    (dark green), not the red the user asked for.
+    """
+    if not re.fullmatch(r"#(?:[0-9a-fA-F]{3}){1,2}", value or ""):
+        return None
+    digits = value.lstrip("#")
+    if len(digits) == 3:
+        digits = "".join(ch * 2 for ch in digits)
+    return int(digits, 16)
 
 
 class AnnouncePreviewView(ui.View):
@@ -22,36 +42,77 @@ class AnnouncePreviewView(ui.View):
         embed: discord.Embed,
         target_channel: discord.TextChannel,
         mention: str | None,
+        allowed_mentions: discord.AllowedMentions,
     ) -> None:
-        super().__init__(timeout=300)
+        super().__init__(timeout=PREVIEW_TIMEOUT)
         self.embed = embed
         self.target_channel = target_channel
         self.mention = mention
+        self.allowed_mentions = allowed_mentions
 
     @ui.button(label="✅ Отправить", style=discord.ButtonStyle.green)
     async def send_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        # The role/everyone mention lives in the message content (mentions inside
-        # an embed never ping) — this is why announcements now actually notify.
-        await self.target_channel.send(
-            content=self.mention or None,
-            embed=self.embed,
-            allowed_mentions=_ANNOUNCE_MENTIONS,
-        )
-        for item in self.children:
-            item.disabled = True  # type: ignore[attr-defined]
+        # Answer the interaction first: a slow or rate-limited send would
+        # otherwise blow the 3-second response window.
+        disable_all(self)
         await interaction.response.edit_message(
-            content="✅ **Анонс успешно отправлен!**", view=self
+            content="📨 Отправляю анонс…", view=self
         )
+
+        guild = interaction.guild
+        me = guild.me if guild is not None else None
+        if me is not None and not self.target_channel.permissions_for(me).send_messages:
+            await interaction.edit_original_response(
+                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            )
+            self.stop()
+            return
+
+        # The role/everyone mention lives in the message content (mentions inside
+        # an embed never ping) — this is why announcements actually notify.
+        try:
+            await self.target_channel.send(
+                content=self.mention or None,
+                embed=self.embed,
+                allowed_mentions=self.allowed_mentions,
+            )
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to send the announcement")
+            await interaction.edit_original_response(
+                content="⚠️ Не удалось отправить анонс."
+            )
+        else:
+            await interaction.edit_original_response(
+                content="✅ **Анонс успешно отправлен!**"
+            )
         self.stop()
 
     @ui.button(label="❌ Отменить", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        for item in self.children:
-            item.disabled = True  # type: ignore[attr-defined]
+        disable_all(self)
         await interaction.response.edit_message(
             content="❌ **Отправка анонса отменена.**", view=self
         )
         self.stop()
+
+    async def on_timeout(self) -> None:
+        disable_all(self)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: ui.Item,
+    ) -> None:
+        logger.error("Announce preview failed", exc_info=error)
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.followup.send(
+                "⚠️ Произошла внутренняя ошибка.", ephemeral=True
+            )
 
 
 class AnnounceModal(ui.Modal, title="Создание нового анонса"):
@@ -70,20 +131,20 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
         self.thumbnail_url = thumbnail_url
         self.default_color = default_color
 
-    custom_title = ui.TextInput(
+    custom_title: ui.TextInput = ui.TextInput(
         label="Заголовок (необязательно)",
         placeholder="Оставьте пустым для стандартного заголовка",
         required=False,
         max_length=256,
     )
-    message_input = ui.TextInput(
+    message_input: ui.TextInput = ui.TextInput(
         label="Текст объявления (Markdown)",
         style=TextStyle.paragraph,
         placeholder="Введите ваше объявление здесь...",
         required=True,
         max_length=4000,
     )
-    color_hex = ui.TextInput(
+    color_hex: ui.TextInput = ui.TextInput(
         label="Цвет в HEX (необязательно)",
         placeholder="Например: #5865F2",
         required=False,
@@ -91,12 +152,9 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        title = self.custom_title.value or "📢 Официальное объявление"
-        color = self.default_color
-        if self.color_hex.value and re.fullmatch(
-            r"#(?:[0-9a-fA-F]{3}){1,2}", self.color_hex.value
-        ):
-            color = int(self.color_hex.value.lstrip("#"), 16)
+        title = self.custom_title.value or DEFAULT_ANNOUNCE_TITLE
+        parsed = parse_hex_color(self.color_hex.value) if self.color_hex.value else None
+        color = parsed if parsed is not None else self.default_color
 
         embed = discord.Embed(
             title=title, description=self.message_input.value, color=color
@@ -110,8 +168,15 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
         if is_http_url(self.thumbnail_url):
             embed.set_thumbnail(url=self.thumbnail_url)
 
-        mention = self.role.mention if self.role else None
-        view = AnnouncePreviewView(embed, self.target_channel, mention)
+        # Re-apply the invoker's own permissions: being allowed to run /announce
+        # must not grant the ability to ping roles they could not ping themselves.
+        allowed = mentions_for_role(interaction.user, self.target_channel, self.role)
+        mention = (
+            self.role.mention
+            if self.role and (allowed.everyone or allowed.roles)
+            else None
+        )
+        view = AnnouncePreviewView(embed, self.target_channel, mention, allowed)
         await interaction.response.send_message(
             "**Предпросмотр анонса.** Всё хорошо? Нажмите «Отправить».",
             embed=embed,
@@ -142,7 +207,8 @@ class Admin(commands.Cog):
         image_url: str | None = None,
         thumbnail_url: str | None = None,
     ) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:  # can_announce() already rejects DMs
+            return
         default_id = self.bot.settings.announce_default_channel
         target = channel or (
             interaction.guild.get_channel(default_id) if default_id else None
@@ -176,15 +242,22 @@ class Admin(commands.Cog):
     ) -> list[app_commands.Choice[str]]:
         if interaction.guild is None:
             return []
-        allowed = self.bot.settings.announce_allowed_roles
         current = current.lower()
+        user = interaction.user
+        channel = interaction.channel
+        privileged = (
+            isinstance(user, discord.Member)
+            and isinstance(channel, discord.abc.GuildChannel)
+            and channel.permissions_for(user).mention_everyone
+        )
+        # Only offer roles this user could actually ping; anything else would be
+        # silently dropped by mentions_for_role() at send time.
         return [
-            app_commands.Choice(
-                name=f"{role.name}{' ✅' if role.id in allowed else ''}",
-                value=str(role.id),
-            )
+            app_commands.Choice(name=role.name, value=str(role.id))
             for role in interaction.guild.roles
-            if role.name != "@everyone" and current in role.name.lower()
+            if role.name != "@everyone"
+            and current in role.name.lower()
+            and (privileged or role.mentionable)
         ][:25]
 
 

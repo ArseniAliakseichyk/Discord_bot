@@ -8,21 +8,45 @@ error before connecting to Discord (see ``bot.py``).
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 import discord
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from core.constants import EMBED_COLOR
+
+#: A comma-separated list of Discord IDs.
+#:
+#: ``NoDecode`` is essential: for a complex field type such as ``set[int]``,
+#: pydantic-settings otherwise runs ``json.loads`` on the raw ``.env`` value
+#: before any validator sees it, and ``EXCLUDED_USER_IDS=1,2`` aborts startup
+#: with "error parsing value for field". With NoDecode the string reaches
+#: ``_parse_id_set`` untouched.
+IdSet = Annotated[set[int], NoDecode]
 
 
 def _parse_id_set(value: object) -> set[int]:
-    """Parse a set of IDs from a ``"1, 2, 3"`` string or an existing collection."""
+    """Parse a set of IDs from a ``"1, 2, 3"`` string or an existing collection.
+
+    Raises ``ValueError`` on a malformed entry: a typo in ``OWNER_IDS`` must fail
+    loudly at startup rather than silently leaving the owner set empty.
+    """
     if value is None or value == "":
         return set()
     if isinstance(value, str):
-        return {int(x.strip()) for x in value.split(",") if x.strip().isdigit()}
+        ids: set[int] = set()
+        for part in value.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise ValueError(f"{part!r} is not a valid Discord ID (digits only)")
+            ids.add(int(part))
+        return ids
     if isinstance(value, (set, list, tuple)):
         return {int(x) for x in value}
-    return value  # type: ignore[return-value]
+    raise ValueError(f"cannot parse a set of IDs from {type(value).__name__}")
 
 
 class Settings(BaseSettings):
@@ -36,10 +60,11 @@ class Settings(BaseSettings):
     )
 
     # --- Discord ---
-    discord_token: str = Field(..., alias="DISCORD_TOKEN")
-    owner_ids: set[int] = Field(default_factory=set, alias="OWNER_IDS")
+    # SecretStr so the token never leaks through repr(settings) or a traceback.
+    discord_token: SecretStr = Field(..., alias="DISCORD_TOKEN")
+    owner_ids: IdSet = Field(default_factory=set, alias="OWNER_IDS")
     log_channel_id: int | None = Field(default=None, alias="LOG_CHANNEL_ID")
-    excluded_user_ids: set[int] = Field(default_factory=set, alias="EXCLUDED_USER_IDS")
+    excluded_user_ids: IdSet = Field(default_factory=set, alias="EXCLUDED_USER_IDS")
 
     # --- Lavalink ---
     lavalink_uri: str = Field(default="http://lavalink:2333", alias="LAVALINK_URI")
@@ -49,8 +74,8 @@ class Settings(BaseSettings):
 
     # --- Announcements / roles ---
     announce_default_channel: int | None = Field(default=None, alias="DEFAULT_CHANNEL")
-    announce_allowed_roles: set[int] = Field(default_factory=set, alias="ALLOWED_ROLES")
-    announce_color: int = 0x2B2D31
+    announce_allowed_roles: IdSet = Field(default_factory=set, alias="ALLOWED_ROLES")
+    announce_color: int = Field(default=EMBED_COLOR, alias="ANNOUNCE_COLOR")
 
     # --- Music ---
     music_folder: str = Field(default="./music", alias="MUSIC_FOLDER")
@@ -73,6 +98,21 @@ class Settings(BaseSettings):
     @classmethod
     def _clamp_volume(cls, v: int) -> int:
         return max(0, min(v, 200))
+
+    @field_validator("max_playlist_tracks", "inactive_timeout")
+    @classmethod
+    def _positive(cls, v: int, info: ValidationInfo) -> int:
+        if v <= 0:
+            raise ValueError(f"{info.field_name} must be greater than 0, got {v}")
+        return v
+
+    @field_validator("max_track_length")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        # 0 disables the limit; a negative value is a configuration mistake.
+        if v < 0:
+            raise ValueError(f"max_track_length must be >= 0 (0 disables the limit), got {v}")
+        return v
 
     @property
     def intents(self) -> discord.Intents:

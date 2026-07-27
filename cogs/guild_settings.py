@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+
 import discord
 import wavelink
 from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
+from core.constants import EMBED_COLOR
 from utils.checks import guild_authorized
+from utils.player import player_of, resolve_volume
+
+logger = logging.getLogger("bot.settings")
 
 
-class GuildSettings(commands.Cog):
+class GuildSettingsCog(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
 
@@ -19,13 +25,17 @@ class GuildSettings(commands.Cog):
         name="settings",
         description="Настройки сервера (нужны права «Управление сервером»)",
         guild_only=True,
+        # A UI default only — server admins can re-open the command to anyone,
+        # so every subcommand also carries a runtime permission check.
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @group.command(name="show", description="Показать текущие настройки")
     @guild_authorized()
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def show(self, interaction: discord.Interaction) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            return
         settings = await self.bot.db.get_settings(interaction.guild.id)
 
         dj = (
@@ -38,13 +48,9 @@ class GuildSettings(commands.Cog):
             if settings.command_channel_id
             else None
         )
-        volume = (
-            settings.default_volume
-            if settings.default_volume is not None
-            else self.bot.settings.default_volume
-        )
+        volume = resolve_volume(settings, self.bot.settings)
 
-        embed = discord.Embed(title="⚙️ Настройки сервера", color=0x2B2D31)
+        embed = discord.Embed(title="⚙️ Настройки сервера", color=EMBED_COLOR)
         embed.add_field(
             name="DJ-роль",
             value=dj.mention if dj else "не задана (управление доступно всем)",
@@ -61,10 +67,12 @@ class GuildSettings(commands.Cog):
     @group.command(name="djrole", description="Задать или сбросить DJ-роль")
     @app_commands.describe(role="Роль для управления музыкой; пусто — сбросить")
     @guild_authorized()
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def djrole(
         self, interaction: discord.Interaction, role: discord.Role | None = None
     ) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            return
         await self.bot.db.update_settings(
             interaction.guild.id, dj_role_id=role.id if role else None
         )
@@ -80,12 +88,14 @@ class GuildSettings(commands.Cog):
     @group.command(name="channel", description="Ограничить команды одним каналом")
     @app_commands.describe(channel="Канал для команд; пусто — снять ограничение")
     @guild_authorized()
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def channel(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel | None = None,
     ) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            return
         await self.bot.db.update_settings(
             interaction.guild.id,
             command_channel_id=channel.id if channel else None,
@@ -102,20 +112,25 @@ class GuildSettings(commands.Cog):
     @group.command(name="volume", description="Громкость по умолчанию (0..200)")
     @app_commands.describe(value="Громкость в процентах, 0..200")
     @guild_authorized()
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def volume(
         self,
         interaction: discord.Interaction,
         value: app_commands.Range[int, 0, 200],
     ) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            return
         await self.bot.db.update_settings(interaction.guild.id, default_volume=value)
-        player: wavelink.Player | None = interaction.guild.voice_client  # type: ignore[assignment]
+        player = player_of(interaction.guild)
         if player is not None:
-            await player.set_volume(value)
+            try:
+                await player.set_volume(value)
+            except (wavelink.LavalinkException, wavelink.NodeException):
+                logger.warning("Could not apply volume to the live player", exc_info=True)
         await interaction.response.send_message(
             f"🔊 Громкость по умолчанию: {value}%", ephemeral=True
         )
 
 
 async def setup(bot: MusicBot) -> None:
-    await bot.add_cog(GuildSettings(bot))
+    await bot.add_cog(GuildSettingsCog(bot))

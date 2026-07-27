@@ -6,7 +6,8 @@ jointo, and add private-bot authorization plus per-guild DJ/channel checks.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, TypeVar
 
 import discord
 from discord import app_commands
@@ -14,8 +15,12 @@ from discord import app_commands
 if TYPE_CHECKING:
     from core.bot import MusicBot
 
+#: What ``app_commands.check`` returns: a decorator preserving the command type.
+T = TypeVar("T")
+CheckDecorator = Callable[[T], T]
 
-def _bot(interaction: discord.Interaction) -> "MusicBot":
+
+def _bot(interaction: discord.Interaction) -> MusicBot:
     return interaction.client  # type: ignore[return-value]
 
 
@@ -32,16 +37,18 @@ class MissingDJRole(app_commands.CheckFailure):
 
 
 class WrongChannel(app_commands.CheckFailure):
+    """Commands are restricted to another channel."""
+
     def __init__(self, channel_id: int) -> None:
         self.channel_id = channel_id
-        super().__init__()
+        super().__init__(f"Используйте команды в <#{channel_id}>.")
 
 
 class MissingAnnouncePerms(app_commands.CheckFailure):
     """No permission to make announcements."""
 
 
-def guild_authorized() -> app_commands.check:
+def guild_authorized() -> CheckDecorator:
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.guild is None:
             raise NotAuthorized("Команда доступна только на сервере.")
@@ -52,7 +59,7 @@ def guild_authorized() -> app_commands.check:
     return app_commands.check(predicate)
 
 
-def is_owner() -> app_commands.check:
+def is_owner() -> CheckDecorator:
     async def predicate(interaction: discord.Interaction) -> bool:
         if await _bot(interaction).is_owner(interaction.user):
             return True
@@ -61,7 +68,7 @@ def is_owner() -> app_commands.check:
     return app_commands.check(predicate)
 
 
-async def user_is_dj(bot: "MusicBot", member: discord.Member) -> bool:
+async def user_is_dj(bot: MusicBot, member: discord.Member) -> bool:
     """Non-raising DJ check, reused by commands and UI buttons.
 
     True if: admin/manage_guild, OR no DJ role configured, OR member has the DJ role.
@@ -75,8 +82,12 @@ async def user_is_dj(bot: "MusicBot", member: discord.Member) -> bool:
     return any(role.id == settings.dj_role_id for role in member.roles)
 
 
-def has_dj() -> app_commands.check:
-    """Allow if: admin/manage_guild, OR no DJ role configured, OR user has the DJ role."""
+def has_dj() -> CheckDecorator:
+    """Allow if: admin/manage_guild, OR no DJ role configured, OR user has the DJ role.
+
+    Outside a guild this passes; every command using it also stacks
+    ``guild_authorized()``, which rejects DMs first.
+    """
 
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
@@ -88,7 +99,7 @@ def has_dj() -> app_commands.check:
     return app_commands.check(predicate)
 
 
-def in_command_channel() -> app_commands.check:
+def in_command_channel() -> CheckDecorator:
     """If a command channel is set, allow only there (admins bypass)."""
 
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -106,7 +117,7 @@ def in_command_channel() -> app_commands.check:
     return app_commands.check(predicate)
 
 
-def can_announce() -> app_commands.check:
+def can_announce() -> CheckDecorator:
     """Admin or one of ALLOWED_ROLES."""
 
     async def predicate(interaction: discord.Interaction) -> bool:
