@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     default_volume: int = Field(default=100, alias="DEFAULT_VOLUME")  # 0..200
     inactive_timeout: int = Field(default=300, alias="INACTIVE_TIMEOUT")  # seconds
 
+    # --- Spotify (optional) ---
+    # Consumed by the LavaSrc plugin on the Lavalink side, not by the bot: the
+    # bot only needs to know whether the source is configured so it can say so
+    # instead of letting a Spotify link fail with a bare "nothing found".
+    spotify_client_id: SecretStr | None = Field(default=None, alias="SPOTIFY_CLIENT_ID")
+    spotify_client_secret: SecretStr | None = Field(
+        default=None, alias="SPOTIFY_CLIENT_SECRET"
+    )
+
     # --- Storage ---
     database_path: str = Field(default="./data/bot.db", alias="DATABASE_PATH")
 
@@ -113,6 +122,20 @@ class Settings(BaseSettings):
         if v < 0:
             raise ValueError(f"max_track_length must be >= 0 (0 disables the limit), got {v}")
         return v
+
+    @field_validator("spotify_client_id", "spotify_client_secret", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        # `SPOTIFY_CLIENT_ID=` left empty in .env must mean "not configured",
+        # not an empty credential that makes Lavalink reject every request.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @property
+    def spotify_enabled(self) -> bool:
+        """Both halves of the credential are required; one alone is useless."""
+        return self.spotify_client_id is not None and self.spotify_client_secret is not None
 
     @property
     def intents(self) -> discord.Intents:
