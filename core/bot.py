@@ -26,6 +26,8 @@ INITIAL_EXTENSIONS: tuple[str, ...] = (
     "cogs.guild_settings",
     "cogs.admin",
     "cogs.builder",
+    "cogs.tickets",
+    "cogs.moderation",
     "cogs.help",
 )
 
@@ -92,6 +94,23 @@ class MusicBot(commands.Bot):
             logger.info("Synced %d application commands", len(synced))
         except discord.HTTPException:
             logger.exception("Failed to sync application commands")
+
+        await self._describe_application()
+
+    async def _describe_application(self) -> None:
+        """Set the blurb shown on the bot's Discord profile."""
+        try:
+            await self.application_info()  # populates self.application
+            if self.application is not None:
+                await self.application.edit(
+                    description=(
+                        "Приватный музыкальный бот: YouTube, Spotify, тикеты "
+                        "и конструктор анонсов. Команды — через /help."
+                    )
+                )
+        except discord.HTTPException:
+            # Cosmetic only; never let it keep the bot from starting.
+            logger.debug("Could not update the application description", exc_info=True)
 
     async def is_owner(self, user: discord.abc.User) -> bool:
         if self.settings.owner_ids and user.id in self.settings.owner_ids:
