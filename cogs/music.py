@@ -18,24 +18,92 @@ from discord.ext import commands
 
 from core.bot import MusicBot
 from core.constants import (
-    EMBED_COLOR,
-    EMBED_DESC_LIMIT,
     MSG_BOT_NOT_CONNECTED,
     MSG_JOIN_VOICE_FIRST,
     MSG_NOTHING_PLAYING,
     MSG_QUEUE_EMPTY,
 )
 from core.db import PlayerSession, SavedTrack
-from ui.controls import NowPlayingControls, now_playing_embed
+from ui.controls import now_playing_panel
 from ui.search import SearchView
+from ui.v2 import PanelView, make_panel
 from utils.checks import guild_authorized, has_dj, in_command_channel
-from utils.formatting import format_duration
+from utils.formatting import format_duration, format_ms, parse_position
 from utils.player import connect_and_configure, player_of
 
 logger = logging.getLogger("bot.music")
 
 SEARCH_RESULTS = 5
 QUEUE_PAGE = 20
+#: Discord shows at most 25 autocomplete choices, each name up to 100 chars.
+AUTOCOMPLETE_LIMIT = 25
+AUTOCOMPLETE_LABEL_LIMIT = 100
+
+LOOP_MODES = {
+    "off": wavelink.QueueMode.normal,
+    "track": wavelink.QueueMode.loop,
+    "queue": wavelink.QueueMode.loop_all,
+}
+LOOP_REPLIES = {
+    "off": "➡️ Повтор выключен.",
+    "track": "🔂 Повтор текущего трека.",
+    "queue": "🔁 Повтор всей очереди.",
+}
+
+#: Search prefixes understood by Lavalink and its plugins. A query that already
+#: starts with one must be passed through untouched: wavelink only skips adding
+#: its own prefix for URLs, so ``spsearch:foo`` would otherwise be sent as
+#: ``ytsearch:spsearch:foo`` and match nothing.
+SOURCE_PREFIXES = (
+    "ytsearch:",
+    "ytmsearch:",
+    "scsearch:",
+    "spsearch:",
+    "sprec:",
+    "dzsearch:",
+    "dzisrc:",
+    "amsearch:",
+    "local:",
+)
+
+#: Hosts served by the LavaSrc Spotify source.
+SPOTIFY_HOSTS = ("open.spotify.com", "play.spotify.com", "spotify.link")
+
+#: Spotify link kinds whose contents cannot be listed by a bot.
+#:
+#: Both were verified against the live Web API, and both come from Spotify's
+#: February 2026 Developer Mode migration rather than from this bot:
+#:
+#: * albums — LavaSrc hydrates them through ``GET /v1/tracks?ids=``, which
+#:   Spotify **removed** in that migration, so the call answers 403. A future
+#:   LavaSrc release could switch to ``/v1/albums/{id}/tracks``, which still
+#:   works, so this one may start working again on its own.
+#: * playlists — ``GET /v1/playlists/{id}/items`` now answers 401 "valid user
+#:   authentication required": it needs a logged-in user, which a
+#:   client-credentials bot does not have.
+SPOTIFY_BULK_PATHS = ("/album/", "/playlist/")
+
+MSG_SPOTIFY_DISABLED = (
+    "⚠️ Spotify не настроен на этом сервере.\n"
+    "Владельцу бота нужно задать `SPOTIFY_CLIENT_ID` и `SPOTIFY_CLIENT_SECRET` "
+    "и перезапустить Lavalink."
+)
+
+MSG_SPOTIFY_BULK = (
+    "⚠️ Альбомы и плейлисты Spotify не открываются.\n"
+    "Spotify закрыл доступ к их составу для ботов в обновлении Web API "
+    "(февраль 2026) — это ограничение на его стороне, не в боте.\n\n"
+    "**Что работает:** ссылка на отдельный трек Spotify, поиск "
+    "`spsearch: название`, плейлисты и альбомы **YouTube**."
+)
+
+
+class SpotifyNotConfigured(Exception):
+    """A Spotify query arrived but the LavaSrc credentials are absent."""
+
+
+class SpotifyBulkUnsupported(Exception):
+    """A Spotify album/playlist link arrived; Spotify will not serve its items."""
 
 
 class Music(commands.Cog):
@@ -100,11 +168,47 @@ class Music(commands.Cog):
         container_dir = self.bot.settings.lavalink_local_dir.rstrip("/")
         return f"{container_dir}/{relative.as_posix()}"
 
+    @staticmethod
+    def _is_spotify(query: str) -> bool:
+        lowered = query.lower()
+        if lowered.startswith(("spsearch:", "sprec:")):
+            return True
+        return any(host in lowered for host in SPOTIFY_HOSTS)
+
+    @classmethod
+    def _is_spotify_bulk(cls, query: str) -> bool:
+        """A Spotify album or playlist link, whose contents Spotify withholds."""
+        lowered = query.lower()
+        return cls._is_spotify(lowered) and any(
+            part in lowered for part in SPOTIFY_BULK_PATHS
+        )
+
     async def _resolve(self, query: str) -> wavelink.Search:
+        """Turn a user query into tracks.
+
+        Order matters: a local file wins over anything else, then an explicit
+        source prefix is honoured as given, and only a bare query falls back to
+        a YouTube search. Spotify links need no special handling beyond the
+        credential check — Lavalink's LavaSrc source manager claims the URL, and
+        wavelink never prefixes a URL.
+        """
+        if self._is_spotify(query):
+            if not self.bot.settings.spotify_enabled:
+                raise SpotifyNotConfigured
+            if self._is_spotify_bulk(query):
+                # Fail fast with an explanation rather than letting LavaSrc hit
+                # the endpoint Spotify refuses and surface "nothing found".
+                raise SpotifyBulkUnsupported
+
         # is_file() hits the filesystem; keep the blocking syscall off the loop.
         local_path = await asyncio.to_thread(self._local_file, query)
         if local_path is not None:
             return await wavelink.Playable.search(local_path)
+
+        if query.lower().startswith(SOURCE_PREFIXES):
+            # source=None: the caller already chose the source.
+            return await wavelink.Playable.search(query, source=None)
+
         return await wavelink.Playable.search(
             query, source=wavelink.TrackSource.YouTube
         )
@@ -145,10 +249,7 @@ class Music(commands.Cog):
         message = self.now_messages.get(player.guild.id)
         if message is not None and player.current is not None:
             try:
-                await message.edit(
-                    embed=now_playing_embed(player.current, player),
-                    view=NowPlayingControls(self),
-                )
+                await message.edit(view=now_playing_panel(player.current, player, self))
             except discord.HTTPException:
                 pass
 
@@ -207,9 +308,12 @@ class Music(commands.Cog):
     #  Commands
     # ------------------------------------------------------------------ #
     @app_commands.command(
-        name="play", description="Воспроизвести трек/плейлист с YouTube или локальный файл"
+        name="play",
+        description="Воспроизвести трек или плейлист: YouTube, Spotify, локальный файл",
     )
-    @app_commands.describe(query="Ссылка, поисковый запрос или имя локального файла")
+    @app_commands.describe(
+        query="Ссылка (YouTube/Spotify), поисковый запрос или имя локального файла"
+    )
     # Decorators evaluate bottom-up, so the cooldown listed first runs last:
     # an unauthorized guild is rejected before the bucket is consumed.
     @app_commands.checks.cooldown(1, 5.0)
@@ -225,6 +329,12 @@ class Music(commands.Cog):
 
         try:
             result = await self._resolve(query.strip())
+        except SpotifyNotConfigured:
+            await interaction.followup.send(MSG_SPOTIFY_DISABLED)
+            return
+        except SpotifyBulkUnsupported:
+            await interaction.followup.send(MSG_SPOTIFY_BULK)
+            return
         except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
             logger.warning("Search failed for %r", query, exc_info=True)
             await interaction.followup.send("⚠️ Не удалось найти трек.")
@@ -275,9 +385,13 @@ class Music(commands.Cog):
             await interaction.followup.send(MSG_JOIN_VOICE_FIRST)
             return
         try:
-            result = await wavelink.Playable.search(
-                query, source=wavelink.TrackSource.YouTube
-            )
+            result = await self._resolve(query.strip())
+        except SpotifyNotConfigured:
+            await interaction.followup.send(MSG_SPOTIFY_DISABLED)
+            return
+        except SpotifyBulkUnsupported:
+            await interaction.followup.send(MSG_SPOTIFY_BULK)
+            return
         except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
             logger.warning("Search failed for %r", query, exc_info=True)
             await interaction.followup.send("⚠️ Ошибка поиска.")
@@ -289,9 +403,9 @@ class Music(commands.Cog):
             return
         tracks = list(result)[:SEARCH_RESULTS]
         view = SearchView(self, tracks, interaction.user)
-        await interaction.followup.send(
-            "🔎 Результаты поиска — выберите трек:", view=view
-        )
+        # No `content`: a Components V2 message cannot carry one — the heading
+        # is part of the view itself.
+        await interaction.followup.send(view=view)
         view.message = await interaction.original_response()
 
     @app_commands.command(name="now", description="Показать текущий трек")
@@ -304,7 +418,7 @@ class Music(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            embed=now_playing_embed(player.current, player), ephemeral=True
+            view=now_playing_panel(player.current, player, self), ephemeral=True
         )
 
     @app_commands.command(name="queue", description="Показать очередь")
@@ -316,16 +430,28 @@ class Music(commands.Cog):
             return
         lines: list[str] = []
         if player.current is not None:
-            lines.append(f"▶️ **{player.current.title}**")
+            lines.append(f"▶️ **{player.current.title}**\n")
         for i, track in enumerate(player.queue, 1):
             if i > QUEUE_PAGE:
-                lines.append(f"… и ещё {len(player.queue) - QUEUE_PAGE}")
+                lines.append(f"-# … и ещё {len(player.queue) - QUEUE_PAGE}")
                 break
-            lines.append(f"`{i}.` {track.title}")
-        embed = discord.Embed(
-            title="📜 Очередь", description="\n".join(lines)[:EMBED_DESC_LIMIT], color=EMBED_COLOR
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            lines.append(f"`{i:>2}.` {track.title}")
+
+        total_ms = sum(t.length for t in player.queue if not t.is_stream and t.length)
+        footer = [f"-# Треков в очереди: {len(player.queue)}"]
+        if total_ms:
+            footer.append(f"общая длительность {format_ms(total_ms)}")
+        if player.queue.mode is not wavelink.QueueMode.normal:
+            footer.append(
+                "повтор трека"
+                if player.queue.mode is wavelink.QueueMode.loop
+                else "повтор очереди"
+            )
+        lines.append(" · ".join(footer))
+
+        view = PanelView(timeout=None)
+        view.add_item(make_panel(title="📜 Очередь", body="\n".join(lines)))
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     @app_commands.command(name="shuffle", description="Перемешать очередь")
     @guild_authorized()
@@ -352,6 +478,183 @@ class Music(commands.Cog):
             await interaction.response.send_message("🧹 Очередь очищена.")
         else:
             await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
+
+    async def _queue_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[int]]:
+        """Offer queue entries by position, filtered by what has been typed."""
+        player = player_of(interaction.guild)
+        if player is None or player.queue.is_empty:
+            return []
+        needle = current.strip().lower()
+        choices: list[app_commands.Choice[int]] = []
+        for index, track in enumerate(player.queue, 1):
+            label = f"{index}. {track.title}"
+            if needle and needle not in label.lower():
+                continue
+            choices.append(
+                app_commands.Choice(name=label[:AUTOCOMPLETE_LABEL_LIMIT], value=index)
+            )
+            if len(choices) >= AUTOCOMPLETE_LIMIT:
+                break
+        return choices
+
+    @app_commands.command(name="volume", description="Громкость текущего воспроизведения")
+    @app_commands.describe(value="Громкость в процентах, 0..200")
+    @guild_authorized()
+    @has_dj()
+    @in_command_channel()
+    async def volume(
+        self,
+        interaction: discord.Interaction,
+        value: app_commands.Range[int, 0, 200],
+    ) -> None:
+        player = player_of(interaction.guild)
+        if player is None:
+            await interaction.response.send_message(
+                MSG_BOT_NOT_CONNECTED, ephemeral=True
+            )
+            return
+        try:
+            await player.set_volume(value)
+        except (wavelink.LavalinkException, wavelink.NodeException):
+            logger.warning("Could not set the volume", exc_info=True)
+            await interaction.response.send_message(
+                "⚠️ Не удалось изменить громкость.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"🔊 Громкость: **{value}%** (только для текущей сессии — "
+            "постоянное значение задаётся в `/settings volume`)."
+        )
+
+    @app_commands.command(name="seek", description="Перемотать текущий трек")
+    @app_commands.describe(position="Позиция: 90, 1:30 или 1:02:03")
+    @guild_authorized()
+    @has_dj()
+    @in_command_channel()
+    async def seek(self, interaction: discord.Interaction, position: str) -> None:
+        player = player_of(interaction.guild)
+        if player is None or player.current is None:
+            await interaction.response.send_message(
+                MSG_NOTHING_PLAYING, ephemeral=True
+            )
+            return
+        track = player.current
+        if track.is_stream or not track.is_seekable:
+            await interaction.response.send_message(
+                "❌ Этот трек нельзя перематывать (прямой эфир).", ephemeral=True
+            )
+            return
+        target = parse_position(position)
+        if target is None:
+            await interaction.response.send_message(
+                "❌ Не понял позицию. Примеры: `90`, `1:30`, `1:02:03`.", ephemeral=True
+            )
+            return
+        if track.length and target > track.length:
+            await interaction.response.send_message(
+                f"❌ Трек длится {format_ms(track.length)} — позиция за его пределами.",
+                ephemeral=True,
+            )
+            return
+        try:
+            await player.seek(target)
+        except (wavelink.LavalinkException, wavelink.NodeException):
+            logger.warning("Seek failed", exc_info=True)
+            await interaction.response.send_message(
+                "⚠️ Не удалось перемотать.", ephemeral=True
+            )
+            return
+        await self.refresh_now_message(player)
+        await interaction.response.send_message(f"⏩ Перемотано на **{format_ms(target)}**.")
+
+    @app_commands.command(name="loop", description="Режим повтора")
+    @app_commands.describe(mode="Что повторять")
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Выключить", value="off"),
+            app_commands.Choice(name="Текущий трек", value="track"),
+            app_commands.Choice(name="Всю очередь", value="queue"),
+        ]
+    )
+    @guild_authorized()
+    @has_dj()
+    @in_command_channel()
+    async def loop(
+        self, interaction: discord.Interaction, mode: app_commands.Choice[str]
+    ) -> None:
+        player = player_of(interaction.guild)
+        if player is None:
+            await interaction.response.send_message(
+                MSG_BOT_NOT_CONNECTED, ephemeral=True
+            )
+            return
+        player.queue.mode = LOOP_MODES[mode.value]
+        await self.refresh_now_message(player)
+        await interaction.response.send_message(LOOP_REPLIES[mode.value])
+
+    @app_commands.command(name="remove", description="Убрать трек из очереди")
+    @app_commands.describe(position="Номер трека в очереди (см. /queue)")
+    @app_commands.autocomplete(position=_queue_autocomplete)
+    @guild_authorized()
+    @has_dj()
+    @in_command_channel()
+    async def remove(
+        self, interaction: discord.Interaction, position: app_commands.Range[int, 1]
+    ) -> None:
+        player = player_of(interaction.guild)
+        if player is None or player.queue.is_empty:
+            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
+            return
+        if position > len(player.queue):
+            await interaction.response.send_message(
+                f"❌ В очереди только {len(player.queue)} треков.", ephemeral=True
+            )
+            return
+        index = position - 1  # the queue is 0-based, the command is 1-based
+        title = player.queue.peek(index).title
+        player.queue.delete(index)
+        await self.persist_queue(player)
+        await interaction.response.send_message(f"🗑️ Убрано из очереди: **{title}**")
+
+    @app_commands.command(name="move", description="Переместить трек в очереди")
+    @app_commands.describe(position="Какой трек переместить", to="На какую позицию")
+    @app_commands.autocomplete(position=_queue_autocomplete)
+    @guild_authorized()
+    @has_dj()
+    @in_command_channel()
+    async def move(
+        self,
+        interaction: discord.Interaction,
+        position: app_commands.Range[int, 1],
+        to: app_commands.Range[int, 1],
+    ) -> None:
+        player = player_of(interaction.guild)
+        if player is None or player.queue.is_empty:
+            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
+            return
+        size = len(player.queue)
+        if position > size or to > size:
+            await interaction.response.send_message(
+                f"❌ В очереди только {size} треков.", ephemeral=True
+            )
+            return
+        if position == to:
+            await interaction.response.send_message(
+                "ℹ️ Трек уже на этой позиции.", ephemeral=True
+            )
+            return
+        # peek + delete rather than get_at: get_at also assigns the track to the
+        # queue's `_loaded` slot, which is what QueueMode.loop replays — moving
+        # a track would silently change what is on repeat.
+        track = player.queue.peek(position - 1)
+        player.queue.delete(position - 1)
+        player.queue.put_at(to - 1, track)
+        await self.persist_queue(player)
+        await interaction.response.send_message(
+            f"↕️ **{track.title}** — теперь на позиции **{to}**."
+        )
 
     @app_commands.command(name="skip", description="Пропустить текущий трек")
     @guild_authorized()
@@ -457,8 +760,7 @@ class Music(commands.Cog):
         await self.clear_now_message(player.guild.id)
         try:
             message = await channel.send(
-                embed=now_playing_embed(payload.track, player),
-                view=NowPlayingControls(self),
+                view=now_playing_panel(payload.track, player, self)
             )
             self.now_messages[player.guild.id] = message
         except discord.HTTPException:

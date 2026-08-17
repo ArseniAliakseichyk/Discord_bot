@@ -1,18 +1,28 @@
 # Lavalink v4 configuration.
-# YouTube is served by the youtube-source plugin (the built-in source is
-# deprecated). The password is injected from the LAVALINK_PASSWORD env var.
+#
+# Two plugins are loaded:
+#   * youtube-source — YouTube playback (the built-in source is deprecated).
+#   * LavaSrc        — Spotify metadata. Spotify itself cannot be streamed, so
+#                      LavaSrc resolves the link to title/artist/ISRC and then
+#                      mirrors it to a playable source via `providers` below.
+#                      That is LavaSrc's normal design, not a workaround.
+#
+# Passwords and Spotify credentials come from the environment (see
+# docker-compose.yml), so nothing secret lives in this file.
 server:
   port: 2333
   address: 0.0.0.0
 
 lavalink:
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      repository: "https://maven.lavalink.dev/releases"
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       repository: "https://maven.lavalink.dev/releases"
   server:
     password: "${LAVALINK_SERVER_PASSWORD:youshallnotpass}"
     sources:
-      youtube: false      # disabled here; handled by the plugin below
+      youtube: false      # disabled here; handled by the youtube plugin below
       bandcamp: true
       soundcloud: true
       twitch: true
@@ -39,6 +49,39 @@ plugins:
       - ANDROID_VR
       - TVHTML5EMBEDDED
       - WEBEMBEDDED
+
+  lavasrc:
+    sources:
+      spotify: true
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      youtube: false      # leave YouTube to the dedicated plugin above
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      jiosaavn: false
+    providers:
+      # ISRC is the recording's unique id, so this finds the same master rather
+      # than a cover or a live version. Falls back to a plain title search when
+      # the track carries no ISRC.
+      - 'ytsearch:"%ISRC%"'
+      - "ytsearch:%QUERY%"
+    spotify:
+      # Empty when SPOTIFY_* are unset: LavaSrc then simply fails to resolve
+      # Spotify links, and the bot reports that instead of "nothing found".
+      clientId: "${SPOTIFY_CLIENT_ID:}"
+      clientSecret: "${SPOTIFY_CLIENT_SECRET:}"
+      # Affects which catalogue/relinking Spotify returns.
+      countryCode: "PL"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+      # Keep this off: it makes an extra call to /v1/artists?ids=, which
+      # Spotify answers with 403 for client-credentials apps, failing the whole
+      # search. Verified against the live API — single-id lookups still work.
+      resolveArtistsInSearch: false
+      localFiles: false
 
 logging:
   level:
