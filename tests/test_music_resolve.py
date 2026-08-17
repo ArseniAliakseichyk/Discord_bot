@@ -57,3 +57,47 @@ class TestLocalFile:
     ) -> None:
         # The raw query is never interpolated: "sub/./deep.mp3" normalises first.
         assert music_cog._local_file("sub/./deep.mp3") == "/music/sub/deep.mp3"
+
+
+class TestSpotifyRouting:
+    """Spotify link handling.
+
+    Albums and playlists are refused up front: verified against the live Web
+    API, Spotify answers ``/v1/tracks?ids=`` with 403 and
+    ``/v1/playlists/{id}/items`` with 401 for client-credentials apps, so
+    LavaSrc cannot list their contents and the user deserves a real reason.
+    """
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "https://open.spotify.com/album/1GbtB4zTqAsyfZEsm1RZfx",
+            "https://open.spotify.com/playlist/61jNo7WKLOIQkahju8i0hw",
+            "HTTPS://OPEN.SPOTIFY.COM/ALBUM/X",
+            "https://open.spotify.com/intl-pl/album/abc",
+        ],
+    )
+    def test_albums_and_playlists_are_detected(self, query: str) -> None:
+        from cogs.music import Music
+
+        assert Music._is_spotify_bulk(query) is True
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "https://open.spotify.com/track/4u7EnebtmKWzUH433cf5Qv",
+            "spsearch:daft punk",
+            "https://www.youtube.com/playlist?list=PL123",
+            "просто запрос",
+        ],
+    )
+    def test_supported_queries_are_not_refused(self, query: str) -> None:
+        from cogs.music import Music
+
+        assert Music._is_spotify_bulk(query) is False
+
+    def test_youtube_playlists_stay_allowed(self) -> None:
+        """The refusal must be Spotify-specific, not "playlist" as a word."""
+        from cogs.music import Music
+
+        assert Music._is_spotify("https://www.youtube.com/playlist?list=X") is False
