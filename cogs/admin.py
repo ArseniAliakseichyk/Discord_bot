@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
+from typing import Any
 
 import discord
 from discord import TextStyle, app_commands, ui
 from discord.ext import commands
 
 from core.bot import MusicBot
-from core.constants import PREVIEW_TIMEOUT
-from ui.views import disable_all
+from core.constants import PREVIEW_TIMEOUT, V2_TEXT_LIMIT
+from ui.v2 import PanelView, make_panel, send_panel, split_text
 from utils.checks import can_announce
 from utils.mentions import mentions_for_role
 from utils.validation import is_http_url
@@ -36,83 +36,136 @@ def parse_hex_color(value: str) -> int | None:
     return int(digits, 16)
 
 
-class AnnouncePreviewView(ui.View):
+def build_announcement(
+    *,
+    title: str,
+    body: str,
+    color: int,
+    author: discord.abc.User,
+    image_url: str | None,
+    thumbnail_url: str | None,
+) -> ui.Container:
+    """The announcement itself, as a v2 container."""
+    header = f"## {title}"
+    container: ui.Container[Any]
+    if is_http_url(thumbnail_url):
+        container = ui.Container(
+            ui.Section(
+                ui.TextDisplay(header),
+                accessory=ui.Thumbnail(thumbnail_url or ""),
+            ),
+            accent_colour=color,
+        )
+    else:
+        container = ui.Container(ui.TextDisplay(header), accent_colour=color)
+
+    for chunk in split_text(body, V2_TEXT_LIMIT - len(header) - 120):
+        container.add_item(ui.TextDisplay(chunk))
+    if is_http_url(image_url):
+        container.add_item(ui.MediaGallery(discord.MediaGalleryItem(image_url or "")))
+    container.add_item(ui.Separator())
+    container.add_item(ui.TextDisplay(f"-# Анонс от {author.display_name}"))
+    return container
+
+
+class AnnouncementPanel(PanelView):
+    """What actually gets posted in the target channel."""
+
+    def __init__(self, container: ui.Container, mention: str | None) -> None:
+        super().__init__(timeout=None)
+        # The ping has to be a TextDisplay: a v2 message has no `content`, and a
+        # mention only notifies when it is real text in the message body.
+        if mention:
+            self.add_item(ui.TextDisplay(mention))
+        self.add_item(container)
+
+
+class AnnounceActions(ui.ActionRow["AnnouncePreviewView"]):
+    @ui.button(label="Отправить", emoji="✅", style=discord.ButtonStyle.green)
+    async def send_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        view = self.view
+        assert view is not None
+        await view.publish(interaction)
+
+    @ui.button(label="Отменить", emoji="❌", style=discord.ButtonStyle.red)
+    async def cancel_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        view = self.view
+        assert view is not None
+        await view.replace(interaction, "❌ **Отправка анонса отменена.**")
+
+
+class AnnouncePreviewView(PanelView):
     def __init__(
         self,
-        embed: discord.Embed,
+        container: ui.Container,
         target_channel: discord.TextChannel,
         mention: str | None,
         allowed_mentions: discord.AllowedMentions,
     ) -> None:
         super().__init__(timeout=PREVIEW_TIMEOUT)
-        self.embed = embed
+        self.container = container
         self.target_channel = target_channel
         self.mention = mention
         self.allowed_mentions = allowed_mentions
+        self._build()
 
-    @ui.button(label="✅ Отправить", style=discord.ButtonStyle.green)
-    async def send_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
+    def _build(self) -> None:
+        self.clear_items()
+        self.add_item(
+            make_panel(
+                body="**Предпросмотр анонса.** Всё хорошо? Нажмите «Отправить».\n"
+                f"-# Канал: {self.target_channel.mention}"
+                + (f" · упоминание: {self.mention}" if self.mention else "")
+            )
+        )
+        if self.mention:
+            # Shown escaped so the preview does not ping anyone prematurely.
+            self.add_item(ui.TextDisplay(f"`{self.mention}`"))
+        self.add_item(self.container)
+        self.add_item(AnnounceActions())
+
+    async def replace(self, interaction: discord.Interaction, text: str) -> None:
+        """Swap the whole preview for a final status line."""
+        self.clear_items()
+        self.add_item(make_panel(body=text))
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(view=self)
+            else:
+                await interaction.response.edit_message(view=self)
+        except discord.HTTPException:
+            logger.debug("Could not update the announce preview", exc_info=True)
+        self.stop()
+
+    async def publish(self, interaction: discord.Interaction) -> None:
         # Answer the interaction first: a slow or rate-limited send would
         # otherwise blow the 3-second response window.
-        disable_all(self)
-        await interaction.response.edit_message(
-            content="📨 Отправляю анонс…", view=self
-        )
+        busy = PanelView(timeout=None)
+        busy.add_item(make_panel(body="📨 Отправляю анонс…"))
+        await interaction.response.edit_message(view=busy)
 
         guild = interaction.guild
         me = guild.me if guild is not None else None
         if me is not None and not self.target_channel.permissions_for(me).send_messages:
-            await interaction.edit_original_response(
-                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            await self.replace(
+                interaction, f"❌ У бота нет прав писать в {self.target_channel.mention}."
             )
-            self.stop()
             return
 
-        # The role/everyone mention lives in the message content (mentions inside
-        # an embed never ping) — this is why announcements actually notify.
         try:
             await self.target_channel.send(
-                content=self.mention or None,
-                embed=self.embed,
+                view=AnnouncementPanel(self.container, self.mention),
                 allowed_mentions=self.allowed_mentions,
             )
         except discord.Forbidden:
-            await interaction.edit_original_response(
-                content=f"❌ У бота нет прав писать в {self.target_channel.mention}."
+            await self.replace(
+                interaction, f"❌ У бота нет прав писать в {self.target_channel.mention}."
             )
         except discord.HTTPException:
             logger.exception("Failed to send the announcement")
-            await interaction.edit_original_response(
-                content="⚠️ Не удалось отправить анонс."
-            )
+            await self.replace(interaction, "⚠️ Не удалось отправить анонс.")
         else:
-            await interaction.edit_original_response(
-                content="✅ **Анонс успешно отправлен!**"
-            )
-        self.stop()
-
-    @ui.button(label="❌ Отменить", style=discord.ButtonStyle.red)
-    async def cancel_button(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        disable_all(self)
-        await interaction.response.edit_message(
-            content="❌ **Отправка анонса отменена.**", view=self
-        )
-        self.stop()
-
-    async def on_timeout(self) -> None:
-        disable_all(self)
-
-    async def on_error(
-        self,
-        interaction: discord.Interaction,
-        error: Exception,
-        item: ui.Item,
-    ) -> None:
-        logger.error("Announce preview failed", exc_info=error)
-        with contextlib.suppress(discord.HTTPException):
-            await interaction.followup.send(
-                "⚠️ Произошла внутренняя ошибка.", ephemeral=True
-            )
+            await self.replace(interaction, "✅ **Анонс успешно отправлен!**")
 
 
 class AnnounceModal(ui.Modal, title="Создание нового анонса"):
@@ -156,17 +209,14 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
         parsed = parse_hex_color(self.color_hex.value) if self.color_hex.value else None
         color = parsed if parsed is not None else self.default_color
 
-        embed = discord.Embed(
-            title=title, description=self.message_input.value, color=color
+        container = build_announcement(
+            title=title,
+            body=self.message_input.value,
+            color=color,
+            author=interaction.user,
+            image_url=self.image_url,
+            thumbnail_url=self.thumbnail_url,
         )
-        embed.set_footer(
-            text=f"Анонс от {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        if is_http_url(self.image_url):
-            embed.set_image(url=self.image_url)
-        if is_http_url(self.thumbnail_url):
-            embed.set_thumbnail(url=self.thumbnail_url)
 
         # Re-apply the invoker's own permissions: being allowed to run /announce
         # must not grant the ability to ping roles they could not ping themselves.
@@ -176,13 +226,8 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
             if self.role and (allowed.everyone or allowed.roles)
             else None
         )
-        view = AnnouncePreviewView(embed, self.target_channel, mention, allowed)
-        await interaction.response.send_message(
-            "**Предпросмотр анонса.** Всё хорошо? Нажмите «Отправить».",
-            embed=embed,
-            view=view,
-            ephemeral=True,
-        )
+        view = AnnouncePreviewView(container, self.target_channel, mention, allowed)
+        await send_panel(interaction, view, ephemeral=True)
 
 
 class Admin(commands.Cog):

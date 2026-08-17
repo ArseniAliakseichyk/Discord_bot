@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
-from core.constants import EMBED_COLOR
+from ui.v2 import PanelView, make_panel
 from utils.checks import guild_authorized
 from utils.player import player_of, resolve_volume
 
@@ -50,19 +50,19 @@ class GuildSettingsCog(commands.Cog):
         )
         volume = resolve_volume(settings, self.bot.settings)
 
-        embed = discord.Embed(title="⚙️ Настройки сервера", color=EMBED_COLOR)
-        embed.add_field(
-            name="DJ-роль",
-            value=dj.mention if dj else "не задана (управление доступно всем)",
-            inline=False,
+        body = "\n".join(
+            (
+                f"**DJ-роль:** {dj.mention if dj else 'не задана (управление доступно всем)'}",
+                f"**Канал команд:** {channel.mention if channel else 'не задан (любой канал)'}",
+                f"**Громкость по умолчанию:** {volume}%",
+                "",
+                "-# Тикеты настраиваются в `/ticket config`, "
+                "журнал модерации — в `/mod log`.",
+            )
         )
-        embed.add_field(
-            name="Канал команд",
-            value=channel.mention if channel else "не задан (любой канал)",
-            inline=False,
-        )
-        embed.add_field(name="Громкость по умолчанию", value=f"{volume}%", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        view = PanelView(timeout=None)
+        view.add_item(make_panel(title="⚙️ Настройки сервера", body=body))
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     @group.command(name="djrole", description="Задать или сбросить DJ-роль")
     @app_commands.describe(role="Роль для управления музыкой; пусто — сбросить")

@@ -34,6 +34,24 @@ class Events(commands.Cog):
             return
         self._audited = True
         await self._audit_guilds()
+        await self._warn_missing_permissions()
+
+    async def _warn_missing_permissions(self) -> None:
+        """Point out permissions whose absence degrades the bot silently.
+
+        Without "Manage Messages" the old now-playing messages cannot be
+        deleted and pile up in the channel, which looks like a bug rather than
+        a missing permission.
+        """
+        for guild in self.bot.guilds:
+            if guild.me.guild_permissions.manage_messages:
+                continue
+            logger.warning(
+                "⚠️ No 'Manage Messages' permission in guild %s (%s) — "
+                "now-playing messages will accumulate",
+                guild.name,
+                guild.id,
+            )
 
     async def _audit_guilds(self) -> None:
         authorized = await self.bot.db.authorized_guilds()
@@ -153,6 +171,32 @@ class Events(commands.Cog):
     async def on_member_remove(self, member: discord.Member) -> None:
         if not self.is_excluded(member):
             logger.info("🚪 %s left %s", format_user(member), member.guild.name)
+
+    @commands.Cog.listener()
+    async def on_reaction_add(
+        self, reaction: discord.Reaction, user: discord.abc.User
+    ) -> None:
+        if user.bot or self.is_excluded(user):
+            return
+        logger.info(
+            "😊 %s added %s in #%s",
+            format_user(user),
+            reaction.emoji,
+            reaction.message.channel,
+        )
+
+    @commands.Cog.listener()
+    async def on_reaction_remove(
+        self, reaction: discord.Reaction, user: discord.abc.User
+    ) -> None:
+        if user.bot or self.is_excluded(user):
+            return
+        logger.info(
+            "😐 %s removed %s in #%s",
+            format_user(user),
+            reaction.emoji,
+            reaction.message.channel,
+        )
 
     @commands.Cog.listener()
     async def on_voice_state_update(

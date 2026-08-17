@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
-from core.constants import EMBED_COLOR, EMBED_DESC_LIMIT, FIELD_VALUE_LIMIT
+from ui.v2 import PanelView, make_panel
 from utils.checks import is_owner
 
 logger = logging.getLogger("bot.owner")
@@ -90,24 +90,22 @@ class Owner(commands.Cog):
     @is_owner()
     async def servers(self, interaction: discord.Interaction) -> None:
         authorized = await self.bot.db.authorized_guilds()
-        embed = discord.Embed(title="🖥️ Серверы бота", color=EMBED_COLOR)
         if not self.bot.guilds:
-            embed.description = "Бот не состоит ни в одном сервере."
+            body = "Бот не состоит ни в одном сервере."
         else:
-            lines = [
+            body = "\n".join(
                 f"{'✅' if g.id in authorized else '⛔'} **{g.name}** "
                 f"(`{g.id}`) — {g.member_count} участников"
                 for g in self.bot.guilds
-            ]
-            embed.description = "\n".join(lines)[:EMBED_DESC_LIMIT]
+            )
         extra = authorized - {g.id for g in self.bot.guilds}
         if extra:
-            embed.add_field(
-                name="Авторизованы, но бот не в сервере",
-                value=", ".join(f"`{gid}`" for gid in extra)[:FIELD_VALUE_LIMIT],
-                inline=False,
+            body += "\n\n**Авторизованы, но бот не в сервере**\n" + ", ".join(
+                f"`{gid}`" for gid in extra
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        view = PanelView(timeout=None)
+        view.add_item(make_panel(title="🖥️ Серверы бота", body=body))
+        await interaction.response.send_message(view=view, ephemeral=True)
 
 
 async def setup(bot: MusicBot) -> None:

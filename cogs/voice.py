@@ -9,7 +9,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.bot import MusicBot
-from core.constants import EMBED_COLOR, MSG_BOT_NOT_CONNECTED, MSG_JOIN_VOICE_FIRST
+from core.constants import MSG_BOT_NOT_CONNECTED, MSG_JOIN_VOICE_FIRST
+from ui.v2 import PanelView, make_panel
 from utils.checks import guild_authorized, has_dj
 from utils.player import connect_and_configure, player_of
 
@@ -82,16 +83,15 @@ class Voice(commands.Cog):
         else:
             await connect_and_configure(target, self.bot)
 
-        embed = discord.Embed(
-            title="🔊 Подключение к голосовому каналу",
-            description=f"Бот подключился к `{target.name}`.",
-            color=EMBED_COLOR,
+        view = PanelView(timeout=None)
+        view.add_item(
+            make_panel(
+                title="🔊 Подключение к голосовому каналу",
+                body=f"Бот подключился к `{target.name}`.\n"
+                f"-# Выполнил: {interaction.user.display_name}",
+            )
         )
-        embed.set_footer(
-            text=f"Выполнил: {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(view=view, ephemeral=True)
 
     @jointo.autocomplete("channel")
     async def channel_autocomplete(
