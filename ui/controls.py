@@ -9,6 +9,7 @@ is the whole message.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -52,9 +53,6 @@ _SOURCE_COLORS = {
 }
 _DEFAULT_SOURCE_COLOR = 0xFFD966
 
-#: Width of the textual progress bar, in characters.
-PROGRESS_WIDTH = 18
-
 
 def _requester(track: wavelink.Playable) -> str | None:
     """Display name of whoever queued the track, if it was recorded.
@@ -69,12 +67,27 @@ def _requester(track: wavelink.Playable) -> str | None:
     return str(name) if name else None
 
 
-def _progress_bar(position: int, length: int) -> str:
-    """Render ``▬▬🔘▬▬`` for the current position within the track."""
-    if length <= 0:
+def _time_line(track: wavelink.Playable, player: wavelink.Player) -> str:
+    """The track's length, plus when it ends.
+
+    The end time is a Discord relative timestamp, which the *client* renders
+    and counts down on its own. A rendered "01:01 / 03:35" is frozen the moment
+    it is sent and is wrong a second later, and keeping it truthful would mean
+    editing the message every few seconds for every guild - which is why mature
+    players show the length only. This gets a live readout for free.
+
+    While paused there is no meaningful end time, so the position is shown as
+    the static value it genuinely is.
+    """
+    if track.is_stream:
+        return "**Длительность:** 🔴 LIVE"
+    if not track.length:
         return ""
-    filled = max(0, min(PROGRESS_WIDTH - 1, position * PROGRESS_WIDTH // length))
-    return "▬" * filled + "🔘" + "▬" * (PROGRESS_WIDTH - 1 - filled)
+    total = format_ms(track.length)
+    if player.paused:
+        return f"**Длительность:** {total}\n-# На паузе на {format_ms(player.position)}"
+    ends_at = int(time.time() + max(0, track.length - player.position) / 1000)
+    return f"**Длительность:** {total}\n-# Закончится <t:{ends_at}:R>"
 
 
 def _status_line(player: wavelink.Player) -> str:
@@ -97,7 +110,13 @@ def now_playing_panel(
 
 
 class PlaybackControls(ui.ActionRow["NowPlayingView"]):
-    """Pause / resume / skip / stop, gated on the DJ role."""
+    """Play/pause, skip and stop, gated on the DJ role."""
+
+    def __init__(self, *, paused: bool = False) -> None:
+        super().__init__()
+        # The control advertises what pressing it will do.
+        self.play_pause.label = "Продолжить" if paused else "Пауза"
+        self.play_pause.emoji = "▶️" if paused else "⏸️"
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         view = self.view
@@ -121,36 +140,24 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
             logger.debug("Could not send button feedback", exc_info=True)
 
     @ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary)
-    async def pause(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        if not await self._guard(interaction):
-            return
-        await interaction.response.defer()
-        view = self.view
-        assert view is not None
-        player = player_of(interaction.guild)
-        if player is None:
-            await self._notify(interaction, MSG_BOT_NOT_CONNECTED)
-        elif not player.playing or player.paused:
-            await self._notify(interaction, "❌ Нечего ставить на паузу.")
-        else:
-            await player.pause(True)
-            await view.cog.refresh_now_message(player)
+    async def play_pause(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        """One button for both states.
 
-    @ui.button(label="Продолжить", emoji="▶️", style=discord.ButtonStyle.secondary)
-    async def resume(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        Two buttons meant one of them was always dead: whichever did not match
+        the current state simply told the user off. This mirrors what every
+        player does - the control shows the action it will perform.
+        """
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
         view = self.view
         assert view is not None
         player = player_of(interaction.guild)
-        if player is None:
-            await self._notify(interaction, MSG_BOT_NOT_CONNECTED)
-        elif not player.paused:
-            await self._notify(interaction, "❌ Воспроизведение не на паузе.")
-        else:
-            await player.pause(False)
-            await view.cog.refresh_now_message(player)
+        if player is None or player.current is None:
+            await self._notify(interaction, MSG_NOTHING_PLAYING)
+            return
+        await player.pause(not player.paused)
+        await view.cog.refresh_now_message(player)
 
     @ui.button(label="Скип", emoji="⏭️", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, _: ui.Button) -> None:
@@ -165,7 +172,7 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
 
     # NOT named `stop`: on a View that shadows View.stop(); kept distinct here
     # too so the two classes stay symmetrical.
-    @ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger)
+    @ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.secondary)
     async def stop_playback(
         self, interaction: discord.Interaction, _: ui.Button
     ) -> None:
@@ -222,14 +229,9 @@ class NowPlayingView(PanelView):
             f"**Источник:** {_SOURCE_NAMES.get(source, source.title() or 'YouTube')}",
             f"**Статус:** {_status_line(player)}",
         ]
-        if track.is_stream:
-            details.append("**Длительность:** 🔴 LIVE")
-        elif track.length:
-            details.append(
-                f"**Длительность:** {format_ms(track.length)}\n"
-                f"{_progress_bar(player.position, track.length)}\n"
-                f"-# {format_ms(player.position)} / {format_ms(track.length)}"
-            )
+        time_line = _time_line(track, player)
+        if time_line:
+            details.append(time_line)
         if not player.queue.is_empty:
             details.append(f"**Далее в очереди:** {len(player.queue)}")
 
@@ -240,5 +242,5 @@ class NowPlayingView(PanelView):
         container.add_item(ui.Separator())
         container.add_item(ui.TextDisplay("\n".join(details)))
         container.add_item(ui.Separator())
-        container.add_item(PlaybackControls())
+        container.add_item(PlaybackControls(paused=player.paused))
         self.add_item(container)

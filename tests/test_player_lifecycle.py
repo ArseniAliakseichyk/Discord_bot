@@ -513,3 +513,77 @@ class TestPlaybackFailures:
             self._exception(player, make_track("broken"))
         )
         assert [t.title for t in player.queue] == ["next"]
+
+
+# --------------------------------------------------------------------------- #
+#  End of queue
+# --------------------------------------------------------------------------- #
+class TestQueueEnd:
+    """Skipping the last track used to leave the panel up for good.
+
+    No further track_start arrives to replace it, so the message kept
+    advertising a finished track with buttons that could only answer "nothing
+    is playing".
+    """
+
+    def _end(self, player, track, reason="finished"):
+        payload = MagicMock(spec=wavelink.TrackEndEventPayload)
+        payload.player = player
+        payload.track = track
+        payload.reason = reason
+        return payload
+
+    async def test_last_track_retires_the_panel(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("only")))
+        panel = home.sent[0]
+
+        player.playing = False
+        player.current = None
+        await music.on_wavelink_track_end(self._end(player, make_track("only")))
+
+        assert panel.deleted, "the finished track's panel was left in the channel"
+        assert guild.id not in music.now_messages
+
+    async def test_the_channel_is_told_the_queue_ended(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("only")))
+        player.playing = False
+        await music.on_wavelink_track_end(self._end(player, make_track("only")))
+        assert len(home.sent) == 2, "no closing message was posted"
+
+    async def test_panel_survives_between_tracks(self, bot) -> None:
+        """With more queued, track_start replaces the panel; do not pre-empt it."""
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
+        panel = home.sent[0]
+        player.queue.put(make_track("b"))
+        player.playing = True
+
+        await music.on_wavelink_track_end(self._end(player, make_track("a")))
+        assert not panel.deleted, "the panel was retired while the queue continued"
+        assert guild.id in music.now_messages
+
+    async def test_autoplay_queue_also_counts_as_more_to_play(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
+        panel = home.sent[0]
+        player.playing = False
+        player.auto_queue.put(make_track("radio"))
+
+        await music.on_wavelink_track_end(self._end(player, make_track("a")))
+        assert not panel.deleted, "autoplay had a track queued but the panel was dropped"
+
+    async def test_stop_does_not_post_a_queue_ended_notice(self, bot) -> None:
+        """/stop already reports itself; a second message would be noise."""
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
+        home.sent.clear()
+
+        async def skip(*_a, **_k):
+            player.playing = False
+            await music.on_wavelink_track_end(self._end(player, make_track("a")))
+
+        player.skip = AsyncMock(side_effect=skip)
+        await music.stop_player(player)
+        assert not home.sent, "stop_player posted a redundant end-of-queue notice"

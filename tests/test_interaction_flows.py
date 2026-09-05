@@ -85,7 +85,7 @@ def press(view, label: str, guild, channel, member, *, values=None):
 #  Inventory: nothing may be added without a test noticing
 # --------------------------------------------------------------------------- #
 EXPECTED_COMPONENTS = {
-    "NowPlayingView": ["Пауза", "Продолжить", "Скип", "Стоп"],
+    "NowPlayingView": ["Пауза", "Скип", "Стоп"],
     "RulesPanel": ["Команды бота", "Связаться с администрацией", "Согласен с правилами"],
     "TicketControls": ["Взять в работу", "Закрыть тикет"],
     "GigaBuilderView": [
@@ -196,9 +196,12 @@ class TestPlaybackBehaviour:
         assert message.edits == 1, "the now-playing panel must be redrawn"
 
     async def test_resume_resumes(self, bot) -> None:
+        """The panel is rebuilt per state, so a paused player shows Продолжить."""
+        from ui.controls import now_playing_panel
+
         guild, channel, member = scene()
-        player = make_player(guild, playing=True, paused=True)
-        view = self._view(bot)
+        player = make_player(guild, playing=False, paused=True)
+        view = now_playing_panel(player.current, player, bot.get_cog("Music"))
         item, interaction = press(view, "Продолжить", guild, channel, member)
         await drive(view, item, interaction)
         player.pause.assert_awaited_once_with(False)
@@ -225,32 +228,37 @@ class TestPlaybackBehaviour:
         assert await bot.db.load_sessions() == [], "stop must drop the saved session"
         assert player.autoplay == discord.utils.MISSING or True
 
-    async def test_pause_twice_only_pauses_once(self, bot) -> None:
-        """The second press finds it already paused and says so instead."""
+    async def test_pressing_the_toggle_twice_returns_to_playing(self, bot) -> None:
+        """It is one control, so a second press is resume, not a refusal."""
+        from ui.controls import now_playing_panel
+
         guild, channel, member = scene()
         player = make_player(guild, playing=True, paused=False)
-        view = self._view(bot)
 
+        view = now_playing_panel(player.current, player, bot.get_cog("Music"))
         item, first = press(view, "Пауза", guild, channel, member)
         await drive(view, item, first)
-        player.paused = True  # the player is now actually paused
+        assert player.pause.await_args.args == (True,)
 
-        item, second = press(view, "Пауза", guild, channel, member)
-        record = await drive(view, item, second)
-
-        assert player.pause.await_count == 1
-        assert record.followups, "the redundant press must explain itself"
+        player.paused = True
+        view = now_playing_panel(player.current, player, bot.get_cog("Music"))
+        item, second = press(view, "Продолжить", guild, channel, member)
+        await drive(view, item, second)
+        assert player.pause.await_args.args == (False,)
+        assert player.pause.await_count == 2
 
     async def test_pause_resume_pause_round_trip(self, bot) -> None:
+        from ui.controls import now_playing_panel
+
         guild, channel, member = scene()
         player = make_player(guild, playing=True, paused=False)
-        view = self._view(bot)
 
         for label, expected, paused_after in (
             ("Пауза", True, True),
             ("Продолжить", False, False),
             ("Пауза", True, True),
         ):
+            view = now_playing_panel(player.current, player, bot.get_cog("Music"))
             item, interaction = press(view, label, guild, channel, member)
             await drive(view, item, interaction)
             assert player.pause.await_args.args == (expected,)
@@ -545,3 +553,76 @@ async def test_random_press_sequences_never_hang(bot, seed) -> None:
         assert record.acknowledged, (
             f"seed={seed}: {type(view).__name__}/{label} left the interaction hanging"
         )
+
+
+# --------------------------------------------------------------------------- #
+#  The play/pause toggle
+# --------------------------------------------------------------------------- #
+class TestPlayPauseToggle:
+    """One control, not two.
+
+    Separate Pause and Resume buttons meant one of them was always dead -
+    whichever did not match the current state could only refuse. The single
+    button shows the action it will perform, which is what every player does.
+    """
+
+    def _panel(self, bot, *, paused: bool):
+        from ui.controls import now_playing_panel
+
+        guild, channel, member = scene()
+        player = make_player(guild, playing=not paused, paused=paused)
+        view = now_playing_panel(player.current, player, bot.get_cog("Music"))
+        return view, guild, channel, member, player
+
+    def _toggle(self, view):
+        return next(
+            i
+            for i in interactive_items(view)
+            if getattr(i, "label", "") in {"Пауза", "Продолжить"}
+        )
+
+    async def test_shows_pause_while_playing(self, bot) -> None:
+        view, *_ = self._panel(bot, paused=False)
+        assert self._toggle(view).label == "Пауза"
+
+    async def test_shows_resume_while_paused(self, bot) -> None:
+        view, *_ = self._panel(bot, paused=True)
+        assert self._toggle(view).label == "Продолжить"
+
+    async def test_pressing_while_playing_pauses(self, bot) -> None:
+        view, guild, channel, member, player = self._panel(bot, paused=False)
+        item, interaction = press(view, "Пауза", guild, channel, member)
+        await drive(view, item, interaction)
+        player.pause.assert_awaited_once_with(True)
+
+    async def test_pressing_while_paused_resumes(self, bot) -> None:
+        view, guild, channel, member, player = self._panel(bot, paused=True)
+        item, interaction = press(view, "Продолжить", guild, channel, member)
+        await drive(view, item, interaction)
+        player.pause.assert_awaited_once_with(False)
+
+    async def test_there_is_exactly_one_of_them(self, bot) -> None:
+        view, *_ = self._panel(bot, paused=False)
+        toggles = [
+            i
+            for i in interactive_items(view)
+            if getattr(i, "label", "") in {"Пауза", "Продолжить"}
+        ]
+        assert len(toggles) == 1
+
+    async def test_answers_when_nothing_is_playing(self, bot) -> None:
+        from ui.controls import NowPlayingView
+
+        guild, channel, member = scene()
+        view = NowPlayingView(bot.get_cog("Music"))
+        item, interaction = press(view, "Пауза", guild, channel, member)
+        record = await drive(view, item, interaction)
+        assert record.acknowledged
+
+    async def test_stop_is_not_styled_as_a_danger(self, bot) -> None:
+        """Requested: the stop button should look like the others."""
+        view, *_ = self._panel(bot, paused=False)
+        stop = next(
+            i for i in interactive_items(view) if getattr(i, "label", "") == "Стоп"
+        )
+        assert stop.style is discord.ButtonStyle.secondary

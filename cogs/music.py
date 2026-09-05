@@ -773,8 +773,26 @@ class Music(commands.Cog):
         self, payload: wavelink.TrackEndEventPayload
     ) -> None:
         player = payload.player
-        if player is not None and player.guild is not None:
-            await self.persist_queue(player)
+        if player is None or player.guild is None:
+            return
+        await self.persist_queue(player)
+
+        # Nothing follows this track, so no track_start will arrive to replace
+        # the panel. Left alone it advertises a finished track forever, with
+        # buttons that can only answer "nothing is playing" - which is what
+        # skipping the last track used to do.
+        if player.guild.id in self._stopping:
+            return  # /stop already tears the panel down
+        if player.playing or not player.queue.is_empty or not player.auto_queue.is_empty:
+            return
+        await self.clear_now_message(player.guild.id)
+        channel_id = self.home_channels.get(player.guild.id)
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if isinstance(channel, discord.abc.Messageable):
+            view = PanelView(timeout=None)
+            view.add_item(make_panel(body="🏁 Очередь закончилась."))
+            with contextlib.suppress(discord.HTTPException):
+                await channel.send(view=view)
 
     async def _report_playback_problem(
         self, player: wavelink.Player | None, track: wavelink.Playable, text: str

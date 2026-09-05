@@ -171,14 +171,14 @@ class TestPlaybackControls:
         interaction = interaction_for(guild, channel, member, message=MagicMessage())
         return await drive(view, item, interaction)
 
-    @pytest.mark.parametrize("label", ["Пауза", "Продолжить", "Скип", "Стоп"])
+    @pytest.mark.parametrize("label", ["Пауза", "Скип", "Стоп"])
     async def test_answers_when_no_player_is_connected(self, loaded_bot, label) -> None:
         """The common real-world case: the panel outlived the voice session."""
         record = await self._press(loaded_bot, label)
         assert record.acknowledged, f"{label} left the interaction hanging"
         assert record.followups, f"{label} deferred but never told the user anything"
 
-    @pytest.mark.parametrize("label", ["Пауза", "Продолжить", "Скип", "Стоп"])
+    @pytest.mark.parametrize("label", ["Пауза", "Скип", "Стоп"])
     async def test_non_dj_is_refused_without_hanging(self, loaded_bot, label) -> None:
         guild, channel, member = scene()
         dj_role = make_role(555, name="DJ")
