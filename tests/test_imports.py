@@ -33,7 +33,6 @@ MODULES = [
     "ui.search",
     "ui.tickets",
     "ui.v2",
-    "ui.views",
     "utils.checks",
     "utils.formatting",
     "utils.logging",

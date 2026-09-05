@@ -15,8 +15,8 @@ Two constraints drive everything here, both enforced by discord.py itself:
   components and ``V2_TEXT_LIMIT`` characters of display text. Long text must be
   split or truncated *before* it reaches the view, otherwise sending raises.
 
-``PanelView`` is the v2 counterpart of :class:`ui.views.EphemeralView` and keeps
-the same timeout/error behaviour, so both styles of view behave alike.
+``PanelView`` is the base every panel inherits: it greys its components out on
+timeout and reports errors instead of leaving a button silently dead.
 """
 
 from __future__ import annotations

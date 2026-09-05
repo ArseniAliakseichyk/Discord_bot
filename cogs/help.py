@@ -150,16 +150,35 @@ class Help(commands.Cog):
     #  Page construction
     # ------------------------------------------------------------------ #
     @staticmethod
+    def _required_permissions(
+        command: app_commands.Command | app_commands.Group,
+    ) -> discord.Permissions | None:
+        """Everything Discord requires for ``command``, parents included.
+
+        ``default_permissions`` may sit on any node of the tree, and Discord
+        applies the whole chain. ``/ticket config category`` carries none itself
+        and hangs off a ``ticket`` group that carries none either - the
+        Manage Server requirement lives on the ``config`` group in the middle,
+        so checking only the command and its root missed it.
+        """
+        required = discord.Permissions.none()
+        node: app_commands.Command | app_commands.Group | None = command
+        while node is not None:
+            if node.default_permissions is not None:
+                required |= node.default_permissions
+            node = node.parent
+        return required if required.value else None
+
+    @classmethod
     def _allowed(
-        command: app_commands.Command | app_commands.Group, user: discord.abc.User
+        cls, command: app_commands.Command | app_commands.Group, user: discord.abc.User
     ) -> bool:
         """Whether ``user`` could plausibly run ``command``.
 
-        Uses the command's ``default_permissions`` as the gate. That is what
-        Discord itself shows the user in the command picker, so the help page
-        and the picker agree.
+        Mirrors what Discord shows in the command picker, so the help page and
+        the picker cannot disagree.
         """
-        required = command.default_permissions
+        required = cls._required_permissions(command)
         if required is None:
             return True
         if not isinstance(user, discord.Member):
@@ -178,8 +197,7 @@ class Help(commands.Cog):
                 continue
             if isinstance(command, app_commands.Group):
                 continue  # the group itself carries no usage, its children do
-            root = command.root_parent or command
-            if not self._allowed(root, user) or not self._allowed(command, user):
+            if not self._allowed(command, user):
                 continue
             lines.append(f"**/{command.qualified_name}** — {_describe(command)}")
         return lines

@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 334-test pytest suite (321 offline + 13 end-to-end), ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 377-test pytest suite (364 offline + 13 end-to-end), ruff + mypy clean |
 
 ---
 
@@ -317,7 +317,7 @@ ui/
     panel.py           the panel itself
 utils/                 checks, formatting, mentions, moderation guards, logging
 lavalink/              application.yml (youtube-source + LavaSrc plugins)
-tests/                 pytest suite — 321 offline + 13 e2e
+tests/                 pytest suite — 364 offline + 13 e2e
 Dockerfile · docker-compose.yml
 ```
 
@@ -328,7 +328,7 @@ Dockerfile · docker-compose.yml
   in `lavalink/application.yml` if you hit playback errors.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest` — 321 offline
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 364 offline
   tests, no network or Discord token needed.
 - **End-to-end checks** talk to a real Lavalink node and are excluded by default.
   They verify that both plugins loaded and that every source still resolves —
