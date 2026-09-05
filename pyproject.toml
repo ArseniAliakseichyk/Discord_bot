@@ -63,7 +63,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["BLE"]
+# RUF059: the test scenario helpers return a whole situation (guild, player,
+# channel, cog) and each test uses the part it needs. Naming the rest with
+# underscores would make the scenarios harder to read, not safer.
+"tests/*" = ["BLE", "RUF059"]
 
 [tool.mypy]
 python_version = "3.12"
