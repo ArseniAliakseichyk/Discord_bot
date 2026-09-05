@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 230-test pytest suite, ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 334-test pytest suite (321 offline + 13 end-to-end), ruff + mypy clean |
 
 ---
 
@@ -317,7 +317,7 @@ ui/
     panel.py           the panel itself
 utils/                 checks, formatting, mentions, moderation guards, logging
 lavalink/              application.yml (youtube-source + LavaSrc plugins)
-tests/                 pytest suite — 230 tests
+tests/                 pytest suite — 321 offline + 13 e2e
 Dockerfile · docker-compose.yml
 ```
 
