@@ -348,10 +348,22 @@ Dockerfile · docker-compose.yml
   All clients the plugin lists as playback-capable are registered, so one
   refusal is not the end of the attempt — an unregistered client is not a
   silent fallback, it simply does not exist.
-- **If videos report `This video requires login`,** add an `oauth` block with a
-  **burner** account, or a `pot` token — both are commented in
-  `lavalink/application.yml`. A `poToken` only affects the `WEB` and
-  `WEBEMBEDDED` clients and is not needed alongside OAuth.
+- **Signing in is what makes it reliable.** The bot this replaced passed a
+  `cookies.txt` to yt-dlp, i.e. it browsed as a logged-in user — which is why
+  it played everything. `youtube-source` has no cookie file; its equivalent is
+  OAuth, and enabling it is the one lever that addresses both `This video
+  requires login` and the SABR refusals:
+  ```bash
+  YOUTUBE_OAUTH=true          # in .env, then recreate the node
+  docker compose logs lavalink | grep OAUTH
+  # open google.com/device, enter the code with a BURNER account
+  # the log then prints a refresh token -> YOUTUBE_REFRESH_TOKEN=...
+  ```
+  `TV` is registered in the client list because it is the only OAuth-capable
+  client the plugin has; without it, enabling OAuth logs
+  "OAuth has been enabled without registering any OAuth-compatible client" and
+  does nothing. A `poToken` is the alternative, affects only `WEB` and
+  `WEBEMBEDDED`, and is not needed alongside OAuth.
 - **If a plugin release stops working,** `YOUTUBE_PLUGIN_VERSION` /
   `YOUTUBE_PLUGIN_REPO` / `YOUTUBE_PLUGIN_SNAPSHOT` in `.env` switch to a
   snapshot build from `main` without editing any YAML.

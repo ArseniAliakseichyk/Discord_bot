@@ -60,6 +60,12 @@ services:
       - YT_CIPHER_PASSWORD=${YT_CIPHER_PASSWORD:-}
       # DEBUG shows why a track produced no stream.
       - YOUTUBE_LOG_LEVEL=${YOUTUBE_LOG_LEVEL:-INFO}
+      # Signing in is what the old yt-dlp bot did with cookies.txt.
+      - YOUTUBE_OAUTH=${YOUTUBE_OAUTH:-false}
+      - YOUTUBE_REFRESH_TOKEN=${YOUTUBE_REFRESH_TOKEN:-}
+      # No-account alternative to signing in; see lavalink/application.yml.
+      - YOUTUBE_POT_TOKEN=${YOUTUBE_POT_TOKEN:-}
+      - YOUTUBE_POT_VISITOR_DATA=${YOUTUBE_POT_VISITOR_DATA:-}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins

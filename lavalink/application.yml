@@ -64,6 +64,12 @@ plugins:
     # the `ytmsearch:` prefix.
     clients:
       - MUSIC
+      # TV is the only client the plugin's table marks as OAuth-capable, so it
+      # must be registered for signing in to have any effect at all - the
+      # plugin warns "OAuth has been enabled without registering any
+      # OAuth-compatible client" otherwise. It also unlocks age-restricted
+      # videos once signed in.
+      - TV
       - ANDROID_VR
       - ANDROID_MUSIC
       - IOS
@@ -83,20 +89,30 @@ plugins:
       password: "${YT_CIPHER_PASSWORD:}"
       userAgent: "astrabot"
 
-    # Uncomment to sign in as a (burner!) account when YouTube answers
-    # "This video requires login". The plugin prints the refresh token to the
-    # log after the flow is completed once. The maintainers warn the account
-    # can be terminated, so never use a personal one.
-    # oauth:
-    #   enabled: true
-    #   refreshToken: "..."
+    # Signing in is the youtube-source equivalent of the cookies.txt the old
+    # yt-dlp implementation used - and the reason that one was stable. Enable
+    # by setting YOUTUBE_OAUTH=true; the plugin then prints a code to enter at
+    # google.com/device, and afterwards logs a refresh token to paste into
+    # YOUTUBE_REFRESH_TOKEN so the flow is never repeated.
+    # Use a burner account: the maintainers warn it can be terminated.
+    oauth:
+      enabled: ${YOUTUBE_OAUTH:false}
+      refreshToken: "${YOUTUBE_REFRESH_TOKEN:}"
 
-    # A poToken only affects the WEB and WEBEMBEDDED clients, and is not needed
-    # when OAuth is in use. Generate one with
-    # https://github.com/iv-org/youtube-trusted-session-generator
-    # pot:
-    #   token: "..."
-    #   visitorData: "..."
+    # A proof-of-origin token makes WEB and WEBEMBEDDED requests look like a
+    # real browser. It is the no-account alternative to signing in: nothing is
+    # authorised, so there is no account to lose. The plugin's README points at
+    # iv-org/youtube-trusted-session-generator, which is deprecated - its last
+    # commit is literally "warning tool is deprecated". Use bgutil instead:
+    #   docker run --name bgutil-provider -d --init \
+    #     -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+    #   curl -s -X POST http://127.0.0.1:4416/get_pot -d '{}' \
+    #     -H 'Content-Type: application/json'
+    # The response's poToken and contentBinding go in the two variables below.
+    # Tokens expire, so re-run it when playback starts failing again.
+    pot:
+      token: "${YOUTUBE_POT_TOKEN:}"
+      visitorData: "${YOUTUBE_POT_VISITOR_DATA:}"
 
   lavasrc:
     sources:
