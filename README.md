@@ -328,7 +328,18 @@ Dockerfile · docker-compose.yml
   in `lavalink/application.yml` if you hit playback errors.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest`.
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 321 offline
+  tests, no network or Discord token needed.
+- **End-to-end checks** talk to a real Lavalink node and are excluded by default.
+  They verify that both plugins loaded and that every source still resolves —
+  including the Spotify limits documented above, so we find out if Spotify ever
+  restores album and playlist access:
+  ```bash
+  docker compose up -d
+  LAVALINK_URI=http://127.0.0.1:2333 LAVALINK_PASSWORD=<your password> \
+      venv/bin/python -m pytest -m e2e
+  ```
+  They skip themselves when no node is reachable.
 
 ## License
 

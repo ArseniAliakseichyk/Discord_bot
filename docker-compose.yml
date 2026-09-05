@@ -40,6 +40,12 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    ports:
+      # Loopback only: the bot reaches the node over the compose network,
+      # so this is purely for local debugging and for the e2e test suite
+      # (`venv/bin/python -m pytest -m e2e`). Not reachable from outside
+      # this machine.
+      - "127.0.0.1:2333:2333"
     networks:
       - botnet
     logging:
