@@ -340,7 +340,14 @@ Dockerfile · docker-compose.yml
   so it is not a configuration mistake — see
   [youtube-source#240](https://github.com/lavalink-devs/youtube-source/issues/240).
   The bot retries a failed track up to three times before giving up, which is
-  what turns most of those random refusals into playback.
+  what turns most of those random refusals into playback. Verified in the
+  plugin's own source: a format carrying neither `url` nor `signatureCipher` is
+  skipped outright (`"missing format URL ... SABR response?"`), so there is
+  nothing for the cipher server to work with. Set `YOUTUBE_LOG_LEVEL=DEBUG` to
+  see that line yourself before suspecting the bot.
+  All clients the plugin lists as playback-capable are registered, so one
+  refusal is not the end of the attempt — an unregistered client is not a
+  silent fallback, it simply does not exist.
 - **If videos report `This video requires login`,** add an `oauth` block with a
   **burner** account, or a `pot` token — both are commented in
   `lavalink/application.yml`. A `poToken` only affects the `WEB` and

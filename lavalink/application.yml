@@ -57,9 +57,18 @@ plugins:
     # own README recommends; every name must appear in its "Available Clients"
     # table or it is ignored. MUSIC has no playback support at all - it is here
     # for the `ytmsearch:` prefix, and the clients after it do the streaming.
+    # Every client the plugin lists as having playback support, so a refusal
+    # from one is not the end of the attempt. Only clients named here are
+    # registered at all - an unregistered one is not a silent fallback, it
+    # simply does not exist. MUSIC has no playback support and is present for
+    # the `ytmsearch:` prefix.
     clients:
       - MUSIC
       - ANDROID_VR
+      - ANDROID_MUSIC
+      - IOS
+      - TVHTML5_SIMPLY
+      - MWEB
       - WEB
       - WEBEMBEDDED
 
@@ -126,3 +135,7 @@ logging:
   level:
     root: INFO
     lavalink: INFO
+    # Set YOUTUBE_LOG_LEVEL=DEBUG to see per-format decisions, including
+    # "missing format URL ... SABR response?" - the line that tells you
+    # YouTube returned no playable URL rather than the bot misbehaving.
+    dev.lavalink.youtube: "${YOUTUBE_LOG_LEVEL:INFO}"

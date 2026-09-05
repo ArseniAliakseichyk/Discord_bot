@@ -58,6 +58,8 @@ services:
       # https://cipher.kikkia.dev/ to use the public instance instead.
       - YT_CIPHER_URL=${YT_CIPHER_URL:-http://yt-cipher:8001}
       - YT_CIPHER_PASSWORD=${YT_CIPHER_PASSWORD:-}
+      # DEBUG shows why a track produced no stream.
+      - YOUTUBE_LOG_LEVEL=${YOUTUBE_LOG_LEVEL:-INFO}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins
