@@ -32,6 +32,16 @@ INITIAL_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+def _is_expired_interaction(error: BaseException) -> bool:
+    """Whether ``error`` is Discord's 10062 "Unknown interaction".
+
+    It arrives wrapped in a CommandInvokeError, and it means the interaction
+    token is already gone - so replying to it would fail the same way.
+    """
+    original = getattr(error, "original", error)
+    return isinstance(original, discord.NotFound) and original.code == 10062
+
+
 class MusicBot(commands.Bot):
     def __init__(self, settings: Settings) -> None:
         super().__init__(
@@ -138,6 +148,19 @@ class MusicBot(commands.Bot):
             message = "❌ Недостаточно прав."
         elif isinstance(error, app_commands.CheckFailure):
             message = "❌ Условие выполнения команды не соблюдено."
+        elif _is_expired_interaction(error):
+            # Discord allows three seconds to answer an interaction, then
+            # discards the token. Nothing is wrong with the command: the event
+            # simply reached us too late, so there is nobody left to reply to.
+            # Logged plainly rather than as a traceback, so it does not look
+            # like a crash and does not bury the errors that are.
+            logger.warning(
+                "Interaction for /%s expired before the bot could answer "
+                "(Discord's 3s window). Usually a slow event loop or a second "
+                "instance running on the same token.",
+                interaction.command.qualified_name if interaction.command else "?",
+            )
+            return
         else:
             logger.error("Unhandled app command error", exc_info=error)
             message = "⚠️ Произошла внутренняя ошибка."
