@@ -323,9 +323,21 @@ Dockerfile · docker-compose.yml
 
 ## Notes
 
-- **YouTube in 2026:** playback uses the `youtube-source` Lavalink plugin. From a
-  datacenter IP, YouTube may require OAuth/PO-token or cookies — configure these
-  in `lavalink/application.yml` if you hit playback errors.
+- **When YouTube playback breaks.** Search keeps working but tracks fail with
+  `No supported audio streams available, available types:` and an empty list.
+  That means YouTube served a SABR-only response with no direct stream URL, and
+  the pinned plugin release cannot read it — it is not about your IP, and it
+  happens on home connections too. Move to a snapshot build from `main`, which
+  carries the fixes made since the last release:
+  ```bash
+  # pick a recent commit from github.com/lavalink-devs/youtube-source
+  YOUTUBE_PLUGIN_VERSION=<commit sha>
+  YOUTUBE_PLUGIN_REPO=snapshots
+  YOUTUBE_PLUGIN_SNAPSHOT=true
+  ```
+  then `docker compose up -d --force-recreate lavalink`. If videos additionally
+  report `This video requires login`, add an `oauth` block with a **burner**
+  account, or a `pot` token — both are commented in `lavalink/application.yml`.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
 - Run the tests with `pip install -r requirements-dev.txt && pytest` — 374 offline

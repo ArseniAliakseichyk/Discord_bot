@@ -15,8 +15,19 @@ server:
 
 lavalink:
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
-      repository: "https://maven.lavalink.dev/releases"
+    # YOUTUBE_PLUGIN_VERSION defaults to the 1.18.2 release. YouTube now answers
+    # many requests with SABR-only data - no direct stream URL - which that
+    # release cannot consume; the symptom is playback failing with
+    # "No supported audio streams available, available types:" and an empty
+    # list, while searching still works.
+    #
+    # The fix is a snapshot build from main, which carries the fixes made since
+    # the release. Set in .env and recreate the node:
+    #   YOUTUBE_PLUGIN_VERSION=f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3
+    #   YOUTUBE_PLUGIN_SNAPSHOT=true
+    - dependency: "dev.lavalink.youtube:youtube-plugin:${YOUTUBE_PLUGIN_VERSION:1.18.2}"
+      repository: "https://maven.lavalink.dev/${YOUTUBE_PLUGIN_REPO:releases}"
+      snapshot: ${YOUTUBE_PLUGIN_SNAPSHOT:false}
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       repository: "https://maven.lavalink.dev/releases"
   server:
@@ -42,13 +53,27 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # Client order matters; these tend to be the most reliable.
+    # Order matters: the first client that returns a usable stream wins, so the
+    # ones least affected by YouTube's stream changes come first. WEB is kept
+    # last because it is the one currently getting SABR-only responses.
     clients:
       - MUSIC
-      - WEB
-      - ANDROID_VR
       - TVHTML5EMBEDDED
+      - ANDROID_VR
       - WEBEMBEDDED
+      - WEB
+
+    # Uncomment to sign in as a (burner!) account when YouTube demands a login.
+    # Leave enabled: false unless you actually need it - the maintainers warn
+    # the account can be terminated.
+    # oauth:
+    #   enabled: true
+    #   refreshToken: "..."
+
+    # A poToken only affects the WEB and WEBEMBEDDED clients.
+    # pot:
+    #   token: "..."
+    #   visitorData: "..."
 
   lavasrc:
     sources:

@@ -440,3 +440,76 @@ class TestMaybeStart:
 
         await music.maybe_start(player)
         player.play.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+#  Playback failures
+# --------------------------------------------------------------------------- #
+class TestPlaybackFailures:
+    """A track that cannot play must say so, not leave a stale panel.
+
+    This is the failure people actually hit: the YouTube source cannot obtain a
+    stream, Lavalink raises a TrackException, and before this the only trace was
+    a Java stack trace in the container log.
+    """
+
+    def _exception(self, player, track, message="No supported audio streams"):
+        payload = MagicMock(spec=wavelink.TrackExceptionEventPayload)
+        payload.player = player
+        payload.track = track
+        payload.exception = MagicMock(message=message)
+        return payload
+
+    def _stuck(self, player, track, threshold=10_000):
+        payload = MagicMock(spec=wavelink.TrackStuckEventPayload)
+        payload.player = player
+        payload.track = track
+        payload.threshold = threshold
+        return payload
+
+    async def test_exception_tells_the_channel(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
+        home.sent.clear()
+
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("a"))
+        )
+        assert home.sent, "the failure was never reported to the channel"
+
+    async def test_exception_clears_the_stale_panel(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
+        panel = home.sent[0]
+
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("a"))
+        )
+        assert panel.deleted, "the panel kept advertising a track that never played"
+        assert guild.id not in music.now_messages
+
+    async def test_exception_without_a_player_is_ignored(self, bot) -> None:
+        music = bot.get_cog("Music")
+        await music.on_wavelink_track_exception(
+            self._exception(None, make_track("a"))
+        )
+
+    async def test_stuck_skips_the_track(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        await music.on_wavelink_track_stuck(self._stuck(player, make_track("a")))
+        player.skip.assert_awaited_once_with(force=True)
+
+    async def test_stuck_survives_a_failing_skip(self, bot) -> None:
+        """Lavalink may already be gone; reporting still has to happen."""
+        music, guild, player, home = setup_guild(bot)
+        player.skip = AsyncMock(side_effect=wavelink.NodeException("node down"))
+        await music.on_wavelink_track_stuck(self._stuck(player, make_track("a")))
+        assert home.sent, "the user was told nothing when the skip also failed"
+
+    async def test_the_rest_of_the_queue_is_untouched(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        player.queue.put(make_track("next"))
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("broken"))
+        )
+        assert [t.title for t in player.queue] == ["next"]

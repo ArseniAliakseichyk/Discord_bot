@@ -7,6 +7,7 @@ Per-guild state lives on the wavelink ``Player`` (one per guild) and its
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from pathlib import Path
@@ -774,6 +775,73 @@ class Music(commands.Cog):
         player = payload.player
         if player is not None and player.guild is not None:
             await self.persist_queue(player)
+
+    async def _report_playback_problem(
+        self, player: wavelink.Player | None, track: wavelink.Playable, text: str
+    ) -> None:
+        """Tell the channel a track could not be played, and drop its panel.
+
+        Without this the now-playing panel keeps advertising a track that never
+        started, and the only trace is a Lavalink stack trace in the container
+        log that the people using the bot never see.
+        """
+        if player is None or player.guild is None:
+            return
+        await self.clear_now_message(player.guild.id)
+        channel_id = self.home_channels.get(player.guild.id)
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+        view = PanelView(timeout=None)
+        view.add_item(
+            make_panel(
+                title="⚠️ Трек не удалось воспроизвести",
+                body=f"**{track.title}**\n{text}",
+                accent=0xED4245,
+            )
+        )
+        try:
+            await channel.send(view=view)
+        except discord.HTTPException:
+            logger.debug("Could not report the playback problem", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_exception(
+        self, payload: wavelink.TrackExceptionEventPayload
+    ) -> None:
+        """A track failed to start or died mid-stream.
+
+        The usual cause is the YouTube source failing to obtain a stream rather
+        than anything about this guild, so the message stays short and the
+        detail goes to the log.
+        """
+        cause = getattr(payload.exception, "message", None) or "источник не отдал поток"
+        logger.warning(
+            "Track exception for %r: %s", payload.track.title, cause
+        )
+        await self._report_playback_problem(
+            payload.player,
+            payload.track,
+            "Источник не отдал аудиопоток. Попробуйте другой трек — "
+            "остальная очередь продолжится.",
+        )
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_stuck(
+        self, payload: wavelink.TrackStuckEventPayload
+    ) -> None:
+        """Lavalink received no audio for `threshold` ms; skip rather than hang."""
+        logger.warning(
+            "Track stuck for %r after %d ms", payload.track.title, payload.threshold
+        )
+        await self._report_playback_problem(
+            payload.player, payload.track, "Поток завис — пропускаю."
+        )
+        if payload.player is not None:
+            with contextlib.suppress(
+                wavelink.LavalinkException, wavelink.NodeException
+            ):
+                await payload.player.skip(force=True)
 
     @commands.Cog.listener()
     async def on_wavelink_inactive_player(self, player: wavelink.Player) -> None:

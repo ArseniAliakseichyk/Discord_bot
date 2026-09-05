@@ -28,6 +28,11 @@ services:
       # container. Unset is fine — Spotify links then simply do not resolve.
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      # Lets you move to a youtube-plugin snapshot without editing YAML, which
+      # is how you recover when a release stops being able to fetch streams.
+      - YOUTUBE_PLUGIN_VERSION=${YOUTUBE_PLUGIN_VERSION:-1.18.2}
+      - YOUTUBE_PLUGIN_REPO=${YOUTUBE_PLUGIN_REPO:-releases}
+      - YOUTUBE_PLUGIN_SNAPSHOT=${YOUTUBE_PLUGIN_SNAPSHOT:-false}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins
