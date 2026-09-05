@@ -710,16 +710,73 @@ class TestRetryOnSourceFailure:
             )
         assert player.play.await_count == 4, "the counter leaked between tracks"
 
-    async def test_a_successful_start_clears_the_counter(self, bot) -> None:
+    async def test_retrying_does_not_reset_its_own_budget(self, bot) -> None:
+        """The bug that shipped: every attempt logged "attempt 1 of 3" forever.
+
+        player.play() makes Lavalink emit track_start before the track fails
+        again. Clearing the counter there made each attempt look like the
+        first, so the track retried without end - hammering YouTube and
+        redrawing the panel every cycle.
+        """
+        from cogs.music import MAX_PLAY_RETRIES
+
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+        track = make_track("flaky")
+
+        # Ten failures, each preceded by the track_start its retry produced.
+        for _ in range(10):
+            await music.on_wavelink_track_start(start_payload(player, track))
+            await music.on_wavelink_track_exception(self._exception(player, track))
+
+        assert player.play.await_count == MAX_PLAY_RETRIES, (
+            f"retried {player.play.await_count} times instead of "
+            f"{MAX_PLAY_RETRIES} - the counter is being reset"
+        )
+
+    async def test_a_finished_track_frees_its_budget(self, bot) -> None:
+        """A track that played through can be retried again if replayed."""
         music, guild, player, home = setup_guild(bot)
         player.play = AsyncMock()
         track = make_track("recovers")
 
         await music.on_wavelink_track_exception(self._exception(player, track))
-        await music.on_wavelink_track_start(start_payload(player, track))
+        end = MagicMock(spec=wavelink.TrackEndEventPayload)
+        end.player, end.track, end.reason = player, track, "finished"
+        await music.on_wavelink_track_end(end)
         await music.on_wavelink_track_exception(self._exception(player, track))
 
-        assert player.play.await_count == 2, "the retry budget was not reset"
+        assert player.play.await_count == 2, "the budget was not released"
+
+    async def test_retrying_does_not_redraw_the_panel(self, bot) -> None:
+        """Each retry reposting the panel is what made the UI flicker."""
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+        track = make_track("flaky")
+
+        await music.on_wavelink_track_start(start_payload(player, track))
+        assert len(home.sent) == 1
+        home.sent.clear()
+
+        for _ in range(3):
+            await music.on_wavelink_track_exception(self._exception(player, track))
+            await music.on_wavelink_track_start(start_payload(player, track))
+
+        assert not home.sent, (
+            f"{len(home.sent)} extra panels posted while retrying one track"
+        )
+
+    async def test_a_different_track_still_gets_its_panel(self, bot) -> None:
+        """Suppressing the redraw must not hide genuinely new tracks."""
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("flaky"))
+        )
+        home.sent.clear()
+        await music.on_wavelink_track_start(start_payload(player, make_track("other")))
+        assert len(home.sent) == 1, "a new track got no panel"
 
     async def test_stop_cancels_retrying(self, bot) -> None:
         """A user who pressed stop does not want the track resurrected."""
@@ -750,3 +807,74 @@ class TestRetryOnSourceFailure:
         assert guild.id in music._play_attempts
         await music.on_guild_remove(guild)
         assert guild.id not in music._play_attempts
+
+
+class TestFailureIsReportedOnce:
+    """One message per dead track, not one per exception.
+
+    After the retry budget ran out, every further exception for the same track
+    posted another failure notice, filling the channel and replacing the panel
+    each time - the flicker seen in production.
+    """
+
+    def _exception(self, player, track):
+        payload = MagicMock(spec=wavelink.TrackExceptionEventPayload)
+        payload.player = player
+        payload.track = track
+        payload.exception = MagicMock(message="No supported audio streams available")
+        return payload
+
+    async def test_repeated_failures_produce_one_message(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+        track = make_track("dead")
+
+        for _ in range(12):
+            await music.on_wavelink_track_exception(self._exception(player, track))
+
+        assert len(home.sent) == 1, (
+            f"{len(home.sent)} failure notices for one track"
+        )
+
+    async def test_retries_stay_within_budget_under_repeat(self, bot) -> None:
+        from cogs.music import MAX_PLAY_RETRIES
+
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+        track = make_track("dead")
+
+        for _ in range(12):
+            await music.on_wavelink_track_exception(self._exception(player, track))
+
+        assert player.play.await_count == MAX_PLAY_RETRIES
+
+    async def test_a_new_track_is_reported_on_its_own(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+
+        for name in ("first", "second"):
+            for _ in range(6):
+                await music.on_wavelink_track_exception(
+                    self._exception(player, make_track(name))
+                )
+        assert len(home.sent) == 2, "each dead track deserves its own notice"
+
+    async def test_a_failed_retry_reports_immediately(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock(side_effect=wavelink.NodeException("node gone"))
+
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("x"))
+        )
+        assert len(home.sent) == 1
+
+    async def test_stop_suppresses_the_notice(self, bot) -> None:
+        music, guild, player, home = setup_guild(bot)
+        player.play = AsyncMock()
+        music._stopping.add(guild.id)
+
+        await music.on_wavelink_track_exception(
+            self._exception(player, make_track("x"))
+        )
+        assert not home.sent
+        player.play.assert_not_awaited()

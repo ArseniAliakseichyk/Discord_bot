@@ -781,7 +781,15 @@ class Music(commands.Cog):
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if not isinstance(channel, discord.abc.Messageable):
             return
-        self._play_attempts.pop(player.guild.id, None)
+        # A retry produces its own track_start before failing again. Clearing
+        # the attempt counter here made every attempt look like the first, so
+        # the track retried forever; reposting the panel here made it flicker
+        # once per attempt. The counter is keyed by track, so a genuinely new
+        # track resets it on its own.
+        retrying_key, _ = self._play_attempts.get(player.guild.id, ("", 0))
+        if retrying_key and retrying_key == self._track_key(payload.track):
+            return
+
         await self.clear_now_message(player.guild.id)
         try:
             message = await channel.send(
@@ -800,6 +808,10 @@ class Music(commands.Cog):
         if player is None or player.guild is None:
             return
         await self.persist_queue(player)
+
+        # The track is over, however it ended, so its attempt budget is spent.
+        if payload.reason in QUEUE_ENDING_REASONS:
+            self._play_attempts.pop(player.guild.id, None)
 
         # Nothing follows this track, so no track_start will arrive to replace
         # the panel. Left alone it advertises a finished track forever, with
@@ -868,8 +880,11 @@ class Music(commands.Cog):
         cause = getattr(payload.exception, "message", None) or "источник не отдал поток"
         logger.warning("Track exception for %r: %s", payload.track.title, cause)
 
-        if await self._retry_track(payload.player, payload.track):
-            return  # another attempt is running; stay quiet about this one
+        outcome = await self._retry_track(payload.player, payload.track)
+        if outcome != "give-up":
+            # Either another attempt is running, or this track has already been
+            # reported and repeating it would just fill the channel.
+            return
 
         if CIPHER_FAILURE_SIGNATURE in str(cause):
             # This exact wording means the source could not turn the track into
@@ -887,10 +902,20 @@ class Music(commands.Cog):
             "остальная очередь продолжится.",
         )
 
+    @staticmethod
+    def _track_key(track: wavelink.Playable) -> str:
+        """Stable identity for a track, used to count attempts against it."""
+        return track.identifier or track.uri or track.title
+
     async def _retry_track(
         self, player: wavelink.Player | None, track: wavelink.Playable
-    ) -> bool:
-        """Play ``track`` again after a source failure. True if a retry started.
+    ) -> str:
+        """Decide what to do about a track that would not play.
+
+        Returns ``"retrying"`` when another attempt has been started,
+        ``"give-up"`` the one time the budget runs out, and ``"reported"`` for
+        every failure after that - so the channel is told once per track
+        rather than once per exception.
 
         The failure is usually random rather than a property of the track, so
         one attempt is a poor verdict. Attempts are counted per guild and per
@@ -898,17 +923,23 @@ class Music(commands.Cog):
         of blocking the queue.
         """
         if player is None or player.guild is None:
-            return False
+            return "give-up"
         guild_id = player.guild.id
         if guild_id in self._stopping:
-            return False
+            return "reported"  # /stop is tearing this down; stay silent
 
-        key = track.identifier or track.uri or track.title
+        key = self._track_key(track)
         previous_key, attempts = self._play_attempts.get(guild_id, ("", 0))
         attempts = attempts + 1 if previous_key == key else 1
         if attempts > MAX_PLAY_RETRIES:
-            self._play_attempts.pop(guild_id, None)
-            return False
+            # Keep the exhausted count rather than clearing it. Forgetting here
+            # let the next failure for the same track start counting from one,
+            # so "giving up" only lasted until the following exception and the
+            # track retried in a loop. A different track resets it by key, and
+            # a track that finishes releases it in on_wavelink_track_end.
+            self._play_attempts[guild_id] = (key, attempts)
+            # Exactly one failure crosses the budget; later ones are silent.
+            return "give-up" if attempts == MAX_PLAY_RETRIES + 1 else "reported"
 
         self._play_attempts[guild_id] = (key, attempts)
         logger.info(
@@ -918,9 +949,9 @@ class Music(commands.Cog):
             await player.play(track)
         except (wavelink.LavalinkException, wavelink.NodeException):
             logger.warning("Retry could not be started", exc_info=True)
-            self._play_attempts.pop(guild_id, None)
-            return False
-        return True
+            self._play_attempts[guild_id] = (key, MAX_PLAY_RETRIES + 1)
+            return "give-up"
+        return "retrying"
 
     @commands.Cog.listener()
     async def on_wavelink_track_stuck(
