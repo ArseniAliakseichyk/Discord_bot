@@ -11,6 +11,24 @@
 # If your own uid is not 1000:
 #   docker compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)
 services:
+  # Signature deciphering for the YouTube source. The youtube-source plugin no
+  # longer does this itself, and without it playback fails while search keeps
+  # working - which is exactly what "No supported audio streams available"
+  # looks like. See https://github.com/kikkia/yt-cipher
+  yt-cipher:
+    image: ghcr.io/kikkia/yt-cipher:master
+    restart: unless-stopped
+    environment:
+      # The author notes only the IAS script variant works reliably.
+      - OVERRIDE_PLAYER_VARIANT=IAS
+    networks:
+      - botnet
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4.2.2
     restart: unless-stopped
@@ -33,6 +51,10 @@ services:
       - YOUTUBE_PLUGIN_VERSION=${YOUTUBE_PLUGIN_VERSION:-1.18.2}
       - YOUTUBE_PLUGIN_REPO=${YOUTUBE_PLUGIN_REPO:-releases}
       - YOUTUBE_PLUGIN_SNAPSHOT=${YOUTUBE_PLUGIN_SNAPSHOT:-false}
+      # Defaults to the yt-cipher service above; point it at
+      # https://cipher.kikkia.dev/ to use the public instance instead.
+      - YT_CIPHER_URL=${YT_CIPHER_URL:-http://yt-cipher:8001}
+      - YT_CIPHER_PASSWORD=${YT_CIPHER_PASSWORD:-}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins

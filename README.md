@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 387-test pytest suite (374 offline + 13 end-to-end), ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 395-test pytest suite (380 offline + 15 end-to-end), ruff + mypy clean |
 
 ---
 
@@ -317,30 +317,31 @@ ui/
     panel.py           the panel itself
 utils/                 checks, formatting, mentions, moderation guards, logging
 lavalink/              application.yml (youtube-source + LavaSrc plugins)
-tests/                 pytest suite — 374 offline + 13 e2e
+tests/                 pytest suite — 380 offline + 15 e2e
 Dockerfile · docker-compose.yml
 ```
 
 ## Notes
 
-- **When YouTube playback breaks.** Search keeps working but tracks fail with
-  `No supported audio streams available, available types:` and an empty list.
-  That means YouTube served a SABR-only response with no direct stream URL, and
-  the pinned plugin release cannot read it — it is not about your IP, and it
-  happens on home connections too. Move to a snapshot build from `main`, which
-  carries the fixes made since the last release:
-  ```bash
-  # pick a recent commit from github.com/lavalink-devs/youtube-source
-  YOUTUBE_PLUGIN_VERSION=<commit sha>
-  YOUTUBE_PLUGIN_REPO=snapshots
-  YOUTUBE_PLUGIN_SNAPSHOT=true
-  ```
-  then `docker compose up -d --force-recreate lavalink`. If videos additionally
-  report `This video requires login`, add an `oauth` block with a **burner**
-  account, or a `pot` token — both are commented in `lavalink/application.yml`.
+- **YouTube playback needs the cipher service.** `youtube-source` no longer
+  deciphers stream signatures itself, so the stack runs
+  [yt-cipher](https://github.com/kikkia/yt-cipher) alongside Lavalink and points
+  `plugins.youtube.remoteCipher` at it. Without it, searching keeps working
+  while every track fails with `No supported audio streams available,
+  available types:` and an empty list — measured here: the plugin's own
+  `/youtube/stream/{id}` route returns **500 without** the service and **200
+  with** it, on the same plugin release. To use the author's public instance
+  instead of the local container, set `YT_CIPHER_URL=https://cipher.kikkia.dev/`.
+- **If videos report `This video requires login`,** that is a separate problem:
+  add an `oauth` block with a **burner** account, or a `pot` token — both are
+  commented in `lavalink/application.yml`. A `poToken` only affects the `WEB`
+  and `WEBEMBEDDED` clients and is not needed alongside OAuth.
+- **If a plugin release stops working,** `YOUTUBE_PLUGIN_VERSION` /
+  `YOUTUBE_PLUGIN_REPO` / `YOUTUBE_PLUGIN_SNAPSHOT` in `.env` switch to a
+  snapshot build from `main` without editing any YAML.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest` — 374 offline
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 380 offline
   tests, no network or Discord token needed.
 - **End-to-end checks** talk to a real Lavalink node and are excluded by default.
   They verify that both plugins loaded and that every source still resolves —

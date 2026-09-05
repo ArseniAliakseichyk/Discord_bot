@@ -53,24 +53,38 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # Order matters: the first client that returns a usable stream wins, so the
-    # ones least affected by YouTube's stream changes come first. WEB is kept
-    # last because it is the one currently getting SABR-only responses.
+    # The order the plugin queries clients in. This is the list the plugin's
+    # own README recommends; every name must appear in its "Available Clients"
+    # table or it is ignored. MUSIC has no playback support at all - it is here
+    # for the `ytmsearch:` prefix, and the clients after it do the streaming.
     clients:
       - MUSIC
-      - TVHTML5EMBEDDED
       - ANDROID_VR
-      - WEBEMBEDDED
       - WEB
+      - WEBEMBEDDED
 
-    # Uncomment to sign in as a (burner!) account when YouTube demands a login.
-    # Leave enabled: false unless you actually need it - the maintainers warn
-    # the account can be terminated.
+    # Signature deciphering is no longer done inside the plugin; without a
+    # cipher server YouTube playback fails while search still works. yt-cipher
+    # is the server the plugin's README points to. This stack runs its own
+    # (see docker-compose.yml); set YT_CIPHER_URL to https://cipher.kikkia.dev/
+    # to use the author's public instance instead, or to an empty value to
+    # disable the feature.
+    remoteCipher:
+      url: "${YT_CIPHER_URL:http://yt-cipher:8001}"
+      password: "${YT_CIPHER_PASSWORD:}"
+      userAgent: "astrabot"
+
+    # Uncomment to sign in as a (burner!) account when YouTube answers
+    # "This video requires login". The plugin prints the refresh token to the
+    # log after the flow is completed once. The maintainers warn the account
+    # can be terminated, so never use a personal one.
     # oauth:
     #   enabled: true
     #   refreshToken: "..."
 
-    # A poToken only affects the WEB and WEBEMBEDDED clients.
+    # A poToken only affects the WEB and WEBEMBEDDED clients, and is not needed
+    # when OAuth is in use. Generate one with
+    # https://github.com/iv-org/youtube-trusted-session-generator
     # pot:
     #   token: "..."
     #   visitorData: "..."

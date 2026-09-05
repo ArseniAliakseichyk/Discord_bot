@@ -194,3 +194,50 @@ class TestBotResolverAgainstRealNode:
         # is not Spotify, which is what the source=None branch prevents.
         if bad["loadType"] not in {"empty", "error"}:
             assert first_track(bad)["sourceName"] != "spotify"
+
+
+# --------------------------------------------------------------------------- #
+#  Streaming - the path that actually plays audio
+# --------------------------------------------------------------------------- #
+class TestStreaming:
+    """Resolving a track and being able to stream it are different things.
+
+    loadtracks only reads metadata; the audio URL is fetched later, during
+    playback, by a code path these tests reach through the plugin's own
+    /youtube/stream route. Checking only loadtracks is how a completely
+    unplayable setup can look healthy - which is exactly what happened here.
+    """
+
+    @staticmethod
+    def _stream(video_id: str) -> tuple[int, str]:
+        request = urllib.request.Request(
+            f"{URI}/youtube/stream/{video_id}",
+            headers={"Authorization": PASSWORD, "Range": "bytes=0-2048"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(2048)
+                return response.status, response.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()[:200].decode(errors="replace")
+
+    def test_a_known_video_yields_an_audio_stream(self) -> None:
+        """Fails with 500 when signature deciphering is unavailable.
+
+        The plugin no longer deciphers signatures itself, so without a reachable
+        remoteCipher server this returns 500 while search still succeeds - the
+        "No supported audio streams available" symptom seen in production.
+        """
+        status, detail = self._stream("dQw4w9WgXcQ")
+        assert status == 200, (
+            f"no audio stream ({status}): {detail}. Check that the yt-cipher "
+            f"service is running and plugins.youtube.remoteCipher points at it."
+        )
+        assert detail.startswith("audio/"), f"expected audio, got {detail}"
+
+    def test_the_cipher_server_is_configured(self) -> None:
+        """A missing remoteCipher is the difference between working and not."""
+        status, info = _get("/v4/info")
+        assert status == 200 and isinstance(info, dict)
+        names = {p["name"] for p in info["plugins"]}
+        assert "youtube-plugin" in names
