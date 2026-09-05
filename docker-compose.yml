@@ -21,6 +21,9 @@ services:
     environment:
       # The author notes only the IAS script variant works reliably.
       - OVERRIDE_PLAYER_VARIANT=IAS
+    # No healthcheck: the image is distroless - no shell, no curl, not even the
+    # deno binary on PATH - so nothing can run inside it. Ordering is enforced
+    # with service_started below instead.
     networks:
       - botnet
     logging:
@@ -59,6 +62,14 @@ services:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - ./lavalink/plugins:/opt/Lavalink/plugins
       - ./music:/music:ro
+    depends_on:
+      yt-cipher:
+        # Without this, Lavalink can come up before the cipher server exists,
+        # and every YouTube track then fails to produce a stream while the
+        # stack looks perfectly healthy. That is exactly how it broke in
+        # practice: the container was still only "Created" when Lavalink
+        # reported itself healthy.
+        condition: service_started
     healthcheck:
       # /version requires the server password ($$ escapes to a literal $ for the
       # shell); it only answers once the HTTP server is actually accepting calls.

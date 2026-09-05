@@ -84,6 +84,24 @@ SPOTIFY_HOSTS = ("open.spotify.com", "play.spotify.com", "spotify.link")
 #:   client-credentials bot does not have.
 SPOTIFY_BULK_PATHS = ("/album/", "/playlist/")
 
+#: Track-end reasons that genuinely mean "there is nothing more to play".
+#: Lavalink also sends "loadFailed" (already reported by the exception
+#: handler), "replaced" and "cleanup" (not endings). See
+#: https://lavalink.dev/api/websocket#track-end-reason
+QUEUE_ENDING_REASONS = frozenset({"finished", "stopped"})
+
+#: What Lavalink says when the YouTube source could not build a stream URL.
+#: Nearly always means the remote cipher server is unreachable.
+CIPHER_FAILURE_SIGNATURE = "No supported audio streams available"
+
+#: How many extra attempts a track gets when the source returns no stream.
+#:
+#: YouTube serves SABR-only responses at random: measured on one track, the
+#: same request alternated between success and failure, succeeding roughly one
+#: time in six. Retrying therefore converts a large share of hard failures into
+#: playback. Kept small so a genuinely dead track does not stall the queue.
+MAX_PLAY_RETRIES = 3
+
 MSG_SPOTIFY_DISABLED = (
     "⚠️ Spotify не настроен на этом сервере.\n"
     "Владельцу бота нужно задать `SPOTIFY_CLIENT_ID` и `SPOTIFY_CLIENT_SECRET` "
@@ -118,6 +136,10 @@ class Music(commands.Cog):
         # on_wavelink_track_end, which would otherwise re-save the session we are
         # about to delete.
         self._stopping: set[int] = set()
+        # Retries per guild for the track currently being attempted, so a
+        # random source failure does not become a lost track. Reset whenever a
+        # track actually starts.
+        self._play_attempts: dict[int, tuple[str, int]] = {}
 
     # ------------------------------------------------------------------ #
     #  Helpers
@@ -266,6 +288,7 @@ class Music(commands.Cog):
         """Drop per-guild bookkeeping so the dicts don't grow without bound."""
         self.home_channels.pop(guild_id, None)
         self.now_messages.pop(guild_id, None)
+        self._play_attempts.pop(guild_id, None)
         self._stopping.discard(guild_id)
 
     async def stop_player(self, player: wavelink.Player) -> None:
@@ -758,6 +781,7 @@ class Music(commands.Cog):
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if not isinstance(channel, discord.abc.Messageable):
             return
+        self._play_attempts.pop(player.guild.id, None)
         await self.clear_now_message(player.guild.id)
         try:
             message = await channel.send(
@@ -783,6 +807,14 @@ class Music(commands.Cog):
         # skipping the last track used to do.
         if player.guild.id in self._stopping:
             return  # /stop already tears the panel down
+        if payload.reason not in QUEUE_ENDING_REASONS:
+            # "loadFailed" means the track could not be played, and
+            # on_wavelink_track_exception has already removed the panel and
+            # explained why. Announcing an empty queue on top of that is a
+            # second message for one event, and both handlers would be racing
+            # for the same panel. "replaced" and "cleanup" are not endings at
+            # all.
+            return
         if player.playing or not player.queue.is_empty or not player.auto_queue.is_empty:
             return
         await self.clear_now_message(player.guild.id)
@@ -834,15 +866,61 @@ class Music(commands.Cog):
         detail goes to the log.
         """
         cause = getattr(payload.exception, "message", None) or "источник не отдал поток"
-        logger.warning(
-            "Track exception for %r: %s", payload.track.title, cause
-        )
+        logger.warning("Track exception for %r: %s", payload.track.title, cause)
+
+        if await self._retry_track(payload.player, payload.track):
+            return  # another attempt is running; stay quiet about this one
+
+        if CIPHER_FAILURE_SIGNATURE in str(cause):
+            # This exact wording means the source could not turn the track into
+            # a stream URL, which in practice means the cipher server is not
+            # reachable. Saying so beats making the next person rediscover it.
+            logger.error(
+                "YouTube returned no playable format. The usual cause is the "
+                "yt-cipher service being unreachable - check `docker compose ps` "
+                "and that plugins.youtube.remoteCipher points at it."
+            )
         await self._report_playback_problem(
             payload.player,
             payload.track,
             "Источник не отдал аудиопоток. Попробуйте другой трек — "
             "остальная очередь продолжится.",
         )
+
+    async def _retry_track(
+        self, player: wavelink.Player | None, track: wavelink.Playable
+    ) -> bool:
+        """Play ``track`` again after a source failure. True if a retry started.
+
+        The failure is usually random rather than a property of the track, so
+        one attempt is a poor verdict. Attempts are counted per guild and per
+        track so a track that really cannot play still gives up quickly instead
+        of blocking the queue.
+        """
+        if player is None or player.guild is None:
+            return False
+        guild_id = player.guild.id
+        if guild_id in self._stopping:
+            return False
+
+        key = track.identifier or track.uri or track.title
+        previous_key, attempts = self._play_attempts.get(guild_id, ("", 0))
+        attempts = attempts + 1 if previous_key == key else 1
+        if attempts > MAX_PLAY_RETRIES:
+            self._play_attempts.pop(guild_id, None)
+            return False
+
+        self._play_attempts[guild_id] = (key, attempts)
+        logger.info(
+            "Retrying %r (attempt %d of %d)", track.title, attempts, MAX_PLAY_RETRIES
+        )
+        try:
+            await player.play(track)
+        except (wavelink.LavalinkException, wavelink.NodeException):
+            logger.warning("Retry could not be started", exc_info=True)
+            self._play_attempts.pop(guild_id, None)
+            return False
+        return True
 
     @commands.Cog.listener()
     async def on_wavelink_track_stuck(
