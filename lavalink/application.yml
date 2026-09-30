@@ -15,19 +15,13 @@ server:
 
 lavalink:
   plugins:
-    # YOUTUBE_PLUGIN_VERSION defaults to the 1.18.2 release. YouTube now answers
-    # many requests with SABR-only data - no direct stream URL - which that
-    # release cannot consume; the symptom is playback failing with
-    # "No supported audio streams available, available types:" and an empty
-    # list, while searching still works.
-    #
-    # The fix is a snapshot build from main, which carries the fixes made since
-    # the release. Set in .env and recreate the node:
-    #   YOUTUBE_PLUGIN_VERSION=f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3
-    #   YOUTUBE_PLUGIN_SNAPSHOT=true
-    - dependency: "dev.lavalink.youtube:youtube-plugin:${YOUTUBE_PLUGIN_VERSION:1.18.2}"
-      repository: "https://maven.lavalink.dev/${YOUTUBE_PLUGIN_REPO:releases}"
-      snapshot: ${YOUTUBE_PLUGIN_SNAPSHOT:false}
+    # docker-compose.yml pins a snapshot of youtube-source main by default,
+    # because the 1.18.2 release fails most videos from a home connection
+    # (10/24 against 72/72, measured - see the comment there). The fallbacks
+    # below only apply when Lavalink runs outside compose.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:${YOUTUBE_PLUGIN_VERSION:2be8e542d3f6f178e048dca565892684c2e40177}"
+      repository: "https://maven.lavalink.dev/${YOUTUBE_PLUGIN_REPO:snapshots}"
+      snapshot: ${YOUTUBE_PLUGIN_SNAPSHOT:true}
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       repository: "https://maven.lavalink.dev/releases"
   server:

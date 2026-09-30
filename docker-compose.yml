@@ -49,11 +49,17 @@ services:
       # container. Unset is fine — Spotify links then simply do not resolve.
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
-      # Lets you move to a youtube-plugin snapshot without editing YAML, which
-      # is how you recover when a release stops being able to fetch streams.
-      - YOUTUBE_PLUGIN_VERSION=${YOUTUBE_PLUGIN_VERSION:-1.18.2}
-      - YOUTUBE_PLUGIN_REPO=${YOUTUBE_PLUGIN_REPO:-releases}
-      - YOUTUBE_PLUGIN_SNAPSHOT=${YOUTUBE_PLUGIN_SNAPSHOT:-false}
+      # Defaults to a snapshot of youtube-source main, not the 1.18.2 release.
+      # Measured from a home connection on 2026-10-01 with the plugin's
+      # /youtube/stream route: release 10/24, this build 72/72 over sixteen
+      # videos. It carries the fixes made after 1.18.2 (TV client User-Agent,
+      # IOS client, and #245 - cipher requests starving the connection pool).
+      # Switch back to a release once one ships with them:
+      #   YOUTUBE_PLUGIN_VERSION=1.18.3  YOUTUBE_PLUGIN_REPO=releases
+      #   YOUTUBE_PLUGIN_SNAPSHOT=false
+      - YOUTUBE_PLUGIN_VERSION=${YOUTUBE_PLUGIN_VERSION:-2be8e542d3f6f178e048dca565892684c2e40177}
+      - YOUTUBE_PLUGIN_REPO=${YOUTUBE_PLUGIN_REPO:-snapshots}
+      - YOUTUBE_PLUGIN_SNAPSHOT=${YOUTUBE_PLUGIN_SNAPSHOT:-true}
       # Defaults to the yt-cipher service above; point it at
       # https://cipher.kikkia.dev/ to use the public instance instead.
       - YT_CIPHER_URL=${YT_CIPHER_URL:-http://yt-cipher:8001}
