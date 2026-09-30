@@ -13,6 +13,19 @@ from utils.playback_failures import (
     classify,
 )
 
+#: Copied from the bot's log during the live test on 2026-09-30.
+LIVE_2026_09_30 = (
+    "(yts.version: 1.18.2) All clients failed to load the item.\n\n"
+    "Client [TVHTML5] failed: The page needs to be reloaded.\n"
+    "Client [ANDROID_VR] failed: This video requires login.\n"
+    "Client [ANDROID_MUSIC] failed: This video requires login.\n"
+    "Client [IOS] failed: Invalid status code for player api response: 400\n"
+    "Client [TVHTML5_SIMPLY] failed: Sign in to confirm you\u2019re not a bot\n"
+    "Client [MWEB] failed: Not success status code: 403\n"
+    "Client [WEB] failed: No supported audio streams available, available types: \n"
+    "Client [WEB_EMBEDDED_PLAYER] failed: This video is unavailable\n"
+)
+
 RETRYABLE = FailureInfo(retryable=True, needs_login=False, summary="x")
 FATAL = FailureInfo(retryable=False, needs_login=False, summary="x")
 G = 1
@@ -35,9 +48,15 @@ class TestClassify:
         assert not info.retryable
         assert not info.needs_login
 
-    def test_a_permanent_reason_wins_over_a_transient_one(self) -> None:
+    def test_one_clients_unavailable_does_not_condemn_the_video(self) -> None:
+        """The live failure: the embedded player said "unavailable" (embedding
+        disabled) while other clients gave transient reasons. Treating that as
+        final meant the track was never retried."""
+        assert classify(LIVE_2026_09_30).retryable
+
+    def test_every_client_calling_it_private_is_final(self) -> None:
         message = (
-            "Client [WEB] failed: No supported audio streams available\n"
+            "Client [WEB] failed: This video is private\n"
             "Client [TV] failed: This video is private\n"
         )
         assert not classify(message).retryable

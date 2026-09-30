@@ -147,7 +147,7 @@ class FakeLavalink:
         # every race between the caller and the websocket events.
         await asyncio.sleep(0)
         state = self.guilds[guild_id]
-        if "paused" in data and "track" not in data:
+        if "paused" in data:
             state.paused = bool(data["paused"])
         if "position" in data and "track" not in data:
             state.seeks.append(int(data["position"]))

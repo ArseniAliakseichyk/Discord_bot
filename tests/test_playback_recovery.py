@@ -478,3 +478,112 @@ class TestBookkeeping:
         await stand.play("bad", "next")
         saved = await stand.bot.db.load_queue(stand.gid)
         assert [t.uri for t in saved] == ["https://example/next"]
+
+
+# --------------------------------------------------------------------------- #
+#  Pause is not inherited by the next track
+# --------------------------------------------------------------------------- #
+class TestPausedPlayer:
+    """Found in the live test: skip while paused stopped the track, and the
+    next one started paused - silence that looked like a broken skip."""
+
+    async def _paused_on(self, stand, *titles: str) -> None:
+        await stand.play(*titles)
+        await stand.player.pause(True)
+        await stand.lavalink.settle()
+
+    def _audible(self, stand) -> bool:
+        return not stand.lavalink.guilds[stand.gid].paused and not stand.player.paused
+
+    async def test_skip_while_paused_plays_the_next_track(self, stand) -> None:
+        await self._paused_on(stand, "a", "b")
+        await stand.music.skip_current(stand.player)
+        await stand.lavalink.settle()
+        assert stand.lavalink.now(stand.gid) == "b"
+        assert self._audible(stand)
+
+    async def test_skip_while_paused_on_repeat_track_moves_on(self, stand) -> None:
+        stand.player.queue.mode = wavelink.QueueMode.loop
+        await self._paused_on(stand, "a", "b")
+        await stand.music.skip_current(stand.player)
+        await stand.lavalink.settle()
+        assert stand.lavalink.now(stand.gid) == "b"
+        assert self._audible(stand)
+
+    async def test_skip_the_last_track_while_paused_leaves_the_player_unpaused(self, stand) -> None:
+        await self._paused_on(stand, "a")
+        await stand.music.skip_current(stand.player)
+        await stand.lavalink.settle()
+        assert stand.lavalink.now(stand.gid) is None
+        await stand.play("b")
+        assert stand.lavalink.now(stand.gid) == "b"
+        assert self._audible(stand)
+
+    async def test_play_after_stopping_while_paused_is_audible(self, stand) -> None:
+        await self._paused_on(stand, "a")
+        await stand.music.stop_player(stand.player)
+        await stand.lavalink.settle()
+        await stand.play("b")
+        assert stand.lavalink.now(stand.gid) == "b"
+        assert self._audible(stand)
+
+    async def test_the_skip_button_while_paused(self, stand) -> None:
+        await self._paused_on(stand, "a", "b")
+        view = stand.live_panel_view()
+        button = next(i for i in view.walk_children() if getattr(i, "label", None) == "Скип")
+        interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
+        record = await drive(view, button, interaction)
+        await stand.lavalink.settle()
+        assert record.acknowledged and not record.followups
+        assert stand.lavalink.now(stand.gid) == "b"
+        assert self._audible(stand)
+
+    async def test_the_play_pause_button_round_trip(self, stand) -> None:
+        await stand.play("a")
+        user = make_member(1, guild=stand.guild)
+
+        def button(label: str):
+            view = stand.live_panel_view()
+            return view, next(i for i in view.walk_children() if getattr(i, "label", None) == label)
+
+        view, pause = button("Пауза")
+        await drive(view, pause, FakeInteraction(user=user, guild=stand.guild))
+        await stand.lavalink.settle()
+        assert stand.player.paused and stand.lavalink.guilds[stand.gid].paused
+        # The panel is edited in place; its button now offers the opposite.
+        live = stand.music.now_messages[stand.gid]
+        assert live.edits >= 1
+
+
+# --------------------------------------------------------------------------- #
+#  Panels survive a restart
+# --------------------------------------------------------------------------- #
+class TestPersistentPanel:
+    def test_the_panel_is_registered_as_persistent(self, stand) -> None:
+        from ui.controls import CID_PLAY_PAUSE, CID_SKIP, CID_STOP, NowPlayingView
+
+        panel = [v for v in stand.bot.persistent_views if isinstance(v, NowPlayingView)]
+        assert len(panel) == 1
+        ids = {i.custom_id for i in panel[0].walk_children() if hasattr(i, "custom_id")}
+        assert {CID_PLAY_PAUSE, CID_SKIP, CID_STOP} <= ids
+
+    async def test_every_posted_panel_uses_the_fixed_ids(self, stand) -> None:
+        from ui.controls import CID_PLAY_PAUSE, CID_SKIP, CID_STOP
+
+        await stand.play("a")
+        view = stand.live_panel_view()
+        ids = {i.custom_id for i in view.walk_children() if getattr(i, "custom_id", None)}
+        assert {CID_PLAY_PAUSE, CID_SKIP, CID_STOP} <= ids
+
+    async def test_a_press_on_a_pre_restart_panel_acts_on_the_live_player(self, stand) -> None:
+        """discord.py routes an unknown message to the registered template."""
+        from ui.controls import NowPlayingView
+
+        await stand.play("a", "b")
+        template = next(v for v in stand.bot.persistent_views if isinstance(v, NowPlayingView))
+        skip = next(i for i in template.walk_children() if getattr(i, "label", None) == "Скип")
+        interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
+        record = await drive(template, skip, interaction)
+        await stand.lavalink.settle()
+        assert record.acknowledged and not record.followups
+        assert stand.lavalink.now(stand.gid) == "b"

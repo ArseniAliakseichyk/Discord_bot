@@ -32,6 +32,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("bot.controls")
 
+# Fixed ids, so a panel posted before a restart still works after it: the cog
+# registers a template view with bot.add_view(). Without them discord.py made
+# up random ids per message, and every button on an older panel answered
+# "This interaction failed". Changing one orphans every panel already posted.
+CID_PLAY_PAUSE = "np:play_pause"
+CID_SKIP = "np:skip"
+CID_STOP = "np:stop"
+
 _SOURCE_NAMES = {
     "youtube": "YouTube",
     "youtubemusic": "YouTube Music",
@@ -139,7 +147,12 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
         except discord.HTTPException:
             logger.debug("Could not send button feedback", exc_info=True)
 
-    @ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary)
+    @ui.button(
+        label="Пауза",
+        emoji="⏸️",
+        style=discord.ButtonStyle.secondary,
+        custom_id=CID_PLAY_PAUSE,
+    )
     async def play_pause(self, interaction: discord.Interaction, _: ui.Button) -> None:
         """One button for both states.
 
@@ -159,7 +172,9 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
         await player.pause(not player.paused)
         await view.cog.refresh_now_message(player)
 
-    @ui.button(label="Скип", emoji="⏭️", style=discord.ButtonStyle.secondary)
+    @ui.button(
+        label="Скип", emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id=CID_SKIP
+    )
     async def skip(self, interaction: discord.Interaction, _: ui.Button) -> None:
         if not await self._guard(interaction):
             return
@@ -174,7 +189,9 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
 
     # NOT named `stop`: on a View that shadows View.stop(); kept distinct here
     # too so the two classes stay symmetrical.
-    @ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.secondary)
+    @ui.button(
+        label="Стоп", emoji="⏹️", style=discord.ButtonStyle.secondary, custom_id=CID_STOP
+    )
     async def stop_playback(
         self, interaction: discord.Interaction, _: ui.Button
     ) -> None:

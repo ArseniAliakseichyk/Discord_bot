@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import discord
 import wavelink
@@ -12,6 +13,35 @@ from core.bot import MusicBot
 from utils.formatting import format_user
 
 logger = logging.getLogger("bot.events")
+
+#: Option values are cut to this length in the log.
+_OPTION_LOG_LIMIT = 80
+
+
+def describe_interaction(interaction: discord.Interaction) -> str:
+    """``/play query=...``, ``button np:skip`` or ``modal ...``, for the log."""
+    data: dict[str, Any] = dict(interaction.data or {})
+    if interaction.type is discord.InteractionType.application_command:
+        parts = [str(data.get("name", "?"))]
+        options: list[dict[str, Any]] = list(data.get("options", []))
+        while options:
+            option = options.pop(0)
+            if "options" in option:  # a subcommand or group
+                parts.append(str(option.get("name")))
+                options = list(option.get("options", [])) + options
+            else:
+                value = str(option.get("value", ""))[:_OPTION_LOG_LIMIT]
+                parts.append(f"{option.get('name')}={value!r}")
+        return "/" + " ".join(parts)
+    if interaction.type is discord.InteractionType.component:
+        values = data.get("values")
+        suffix = f" {values}" if values else ""
+        return f"component {data.get('custom_id', '?')}{suffix}"
+    if interaction.type is discord.InteractionType.modal_submit:
+        return f"modal {data.get('custom_id', '?')}"
+    if interaction.type is discord.InteractionType.autocomplete:
+        return f"autocomplete /{data.get('name', '?')}"
+    return str(interaction.type)
 
 
 class Events(commands.Cog):
@@ -23,6 +53,27 @@ class Events(commands.Cog):
 
     def is_excluded(self, user: discord.abc.User) -> bool:
         return user.id in self.bot.settings.excluded_user_ids
+
+    # ------------------------------------------------------------------ #
+    #  Interactions
+    # ------------------------------------------------------------------ #
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """One line per command and button press.
+
+        Without it a live problem could not be reconstructed: the log showed a
+        track being stopped but not whether someone pressed Skip or Stop.
+        """
+        if interaction.type is discord.InteractionType.autocomplete:
+            return  # fires on every keystroke
+        if self.is_excluded(interaction.user):
+            return
+        logger.info(
+            "🖱 %s in guild %s: %s",
+            format_user(interaction.user),
+            interaction.guild_id,
+            describe_interaction(interaction),
+        )
 
     # ------------------------------------------------------------------ #
     #  Private-bot authorization

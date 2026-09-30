@@ -97,7 +97,11 @@ def classify(message: str | None) -> FailureInfo:
         summary = text.splitlines()[0] if text else "unknown error"
         lowered = [text.lower()]
 
-    permanent = any(p in why for why in lowered for p in _PERMANENT)
+    # A video is gone only if *every* client says so. One client's
+    # "unavailable" is often about that client alone - the embedded player
+    # reports it for any video whose owner disabled embedding - and treating
+    # it as final once stopped every retry of a playable track.
+    permanent = all(any(p in why for p in _PERMANENT) for why in lowered)
     transient = any(t in why for why in lowered for t in _TRANSIENT)
     # With no recognisable reason at all, one more attempt costs little.
     retryable = not permanent and (transient or not reasons)

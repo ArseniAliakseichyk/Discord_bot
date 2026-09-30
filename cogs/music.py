@@ -25,7 +25,7 @@ from core.constants import (
     MSG_QUEUE_EMPTY,
 )
 from core.db import PlayerSession, SavedTrack
-from ui.controls import now_playing_panel
+from ui.controls import NowPlayingView, now_playing_panel
 from ui.search import SearchView
 from ui.v2 import PanelView, make_panel
 from utils.checks import guild_authorized, has_dj, in_command_channel
@@ -268,7 +268,10 @@ class Music(commands.Cog):
                 # failures gets another chance.
                 self._failures.resume_queue(player.guild.id)
             _set_autoplay_errors(player, 0)
-            await player.play(player.queue.get())
+            # Explicitly unpaused: wavelink starts a track in whatever pause
+            # state the player was left in, so after /stop or a skip while
+            # paused the next /play would start silently.
+            await player.play(player.queue.get(), paused=False)
 
     async def skip_current(self, player: wavelink.Player) -> bool:
         """Move to the next track. False when there is nothing to move to.
@@ -292,12 +295,20 @@ class Music(commands.Cog):
         ):
             queue.delete(0)
         if player.current is not None:
+            was_paused = player.paused
             await player.skip(force=True)
+            if was_paused:
+                # Every player resumes when you skip while paused. Left alone,
+                # AutoPlay starts the next track in the inherited pause state,
+                # silently - which looked like the skip had not worked. Either
+                # this lands before AutoPlay's play (which then starts
+                # unpaused) or after it (and unpauses it); both end playing.
+                await player.pause(False)
             return True
         if not queue.is_empty:
             self._failures.resume_queue(player.guild.id)
             _set_autoplay_errors(player, 0)
-            await player.play(queue.get())
+            await player.play(queue.get(), paused=False)
             return True
         return withdrawn is not None
 
@@ -848,6 +859,12 @@ class Music(commands.Cog):
         is_retry, resume_ms = self._failures.on_start(
             player.guild.id, self._track_key(payload.track)
         )
+        logger.info(
+            "%s %r in guild %s",
+            "Retry started" if is_retry else "Now playing",
+            payload.track.title,
+            player.guild.id,
+        )
         if is_retry:
             if resume_ms and payload.track.is_seekable:
                 with contextlib.suppress(
@@ -885,6 +902,13 @@ class Music(commands.Cog):
         player = payload.player
         if player is None or player.guild is None:
             return
+        logger.info(
+            "Track ended (%s): %r in guild %s, %d queued",
+            payload.reason,
+            payload.track.title,
+            player.guild.id,
+            len(player.queue),
+        )
         if payload.reason != "loadFailed":
             # The track played, however briefly, so the run of failures ended.
             self._failures.on_played(player.guild.id)
@@ -1207,4 +1231,7 @@ class Music(commands.Cog):
 
 
 async def setup(bot: MusicBot) -> None:
-    await bot.add_cog(Music(bot))
+    cog = Music(bot)
+    await bot.add_cog(cog)
+    # Routes presses on panels posted before this process started.
+    bot.add_view(NowPlayingView(cog))
