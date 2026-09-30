@@ -197,6 +197,13 @@ the bot is already gone by the time you can type a command.
 Once the bot is in one authorized server, you can manage the rest from there with
 `/authorize`, `/deauthorize` and `/servers`.
 
+The whitelist lives in `data/bot.db`, so **back that file up** and never start the
+bot's production token against an empty `data/`. If the bot starts while sitting
+in servers and finds the whitelist *empty*, it logs an error and stays put rather
+than leaving them all — an empty list means the database was lost, and leaving
+cannot be undone by the bot: only a server admin can invite it back. A non-empty
+whitelist is enforced as before.
+
 ### 4. Optional: enable Spotify
 
 Spotify links work through the [LavaSrc](https://github.com/topi314/LavaSrc)

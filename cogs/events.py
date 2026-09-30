@@ -55,6 +55,20 @@ class Events(commands.Cog):
 
     async def _audit_guilds(self) -> None:
         authorized = await self.bot.db.authorized_guilds()
+        if not authorized and self.bot.guilds:
+            # An empty whitelist while already sitting in servers means the
+            # database was lost or replaced, not that every server is a
+            # stranger. Leaving is irreversible - only a server admin can
+            # invite the bot back - and a fresh data/bot.db once made the bot
+            # walk out of the one server it served. Refuse, loudly.
+            logger.error(
+                "The guild whitelist is empty but the bot is in %d guild(s): %s. "
+                "Not leaving - this looks like a lost or new database. Restore "
+                "data/bot.db or DM the bot /authorize <guild_id>.",
+                len(self.bot.guilds),
+                ", ".join(f"{g.name} ({g.id})" for g in self.bot.guilds),
+            )
+            return
         for guild in list(self.bot.guilds):
             if guild.id not in authorized:
                 logger.warning(
