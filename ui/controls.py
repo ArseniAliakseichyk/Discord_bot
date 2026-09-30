@@ -164,11 +164,13 @@ class PlaybackControls(ui.ActionRow["NowPlayingView"]):
         if not await self._guard(interaction):
             return
         await interaction.response.defer()
+        view = self.view
+        assert view is not None
         player = player_of(interaction.guild)
-        if player is None or not (player.playing or player.current):
+        # Same path as /skip, so a queued retry or a paused queue behaves the
+        # same whichever way the user skips.
+        if player is None or not await view.cog.skip_current(player):
             await self._notify(interaction, MSG_NOTHING_PLAYING)
-        else:
-            await player.skip(force=True)
 
     # NOT named `stop`: on a View that shadows View.stop(); kept distinct here
     # too so the two classes stay symmetrical.

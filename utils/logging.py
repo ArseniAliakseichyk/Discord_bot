@@ -69,8 +69,18 @@ def setup_logging(level: int = logging.INFO) -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
+    configure_library_loggers()
+
+
+def configure_library_loggers() -> None:
+    """Set the levels of the loggers owned by discord.py and wavelink."""
     logging.getLogger("discord").setLevel(logging.WARNING)
     logging.getLogger("wavelink").setLevel(logging.INFO)
+    # wavelink logs every Lavalink TrackException at ERROR on this logger, with
+    # the whole multi-client report twice over - about sixty lines per failed
+    # attempt, forwarded to the Discord log channel as well. The music cog
+    # logs one line per failure with the same reasons, so this one is muted.
+    logging.getLogger("TrackException").setLevel(logging.CRITICAL)
 
 
 def attach_discord_handler(bot: MusicBot, channel_id: int) -> asyncio.Task[None]:

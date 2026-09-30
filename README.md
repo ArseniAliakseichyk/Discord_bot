@@ -340,7 +340,13 @@ Dockerfile · docker-compose.yml
   so it is not a configuration mistake — see
   [youtube-source#240](https://github.com/lavalink-devs/youtube-source/issues/240).
   The bot retries a failed track up to three times before giving up, which is
-  what turns most of those random refusals into playback. Verified in the
+  what turns most of those random refusals into playback. Only refusals that
+  can change are retried: `Video unavailable`, `This video is private` and a
+  bare sign-in wall are reported at once. A stream that breaks mid-way resumes
+  near where it stopped. After three tracks in a row fail, the queue pauses
+  instead of burning through the rest; `/skip` or `/play` resumes it. The
+  channel is told once per track, and the log carries one line naming every
+  client and its reason instead of wavelink's sixty-line trace. Verified in the
   plugin's own source: a format carrying neither `url` nor `signatureCipher` is
   skipped outright (`"missing format URL ... SABR response?"`), so there is
   nothing for the cipher server to work with. Set `YOUTUBE_LOG_LEVEL=DEBUG` to
@@ -369,8 +375,12 @@ Dockerfile · docker-compose.yml
   snapshot build from `main` without editing any YAML.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest` — 411 offline
-  tests, no network or Discord token needed.
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 499 offline
+  tests, no network or Discord token needed. Failed-track handling is tested in
+  `tests/test_playback_recovery.py` against the real wavelink `Player`, `Queue`
+  and AutoPlay, fed by a scripted Lavalink (`tests/lavalink_stand.py`) through
+  wavelink's own websocket reader — in both of the event orderings the network
+  can produce. Mock players had hidden the races that froze the queue.
 - **End-to-end checks** talk to a real Lavalink node and are excluded by default.
   They verify that both plugins loaded and that every source still resolves —
   including the Spotify limits documented above, so we find out if Spotify ever
