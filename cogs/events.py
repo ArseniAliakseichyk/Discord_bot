@@ -99,7 +99,8 @@ class Events(commands.Cog):
                 continue
             logger.warning(
                 "⚠️ No 'Manage Messages' permission in guild %s (%s) — "
-                "now-playing messages will accumulate",
+                "/mod purge will not work there (the bot needs no permission "
+                "to remove its own panels)",
                 guild.name,
                 guild.id,
             )

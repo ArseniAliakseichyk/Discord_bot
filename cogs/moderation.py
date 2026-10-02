@@ -37,6 +37,14 @@ COLOR_OK = 0x57F287
 #: Discord refuses bulk deletion of messages older than 14 days.
 BULK_DELETE_MAX_AGE = datetime.timedelta(days=14)
 PURGE_LIMIT = 100
+#: How far back /mod purge looks for one author's messages. ``limit`` in
+#: discord.py's purge counts messages *scanned*, not deleted, so asking for
+#: "10 messages by X" used to look at the last 10 messages and delete X's
+#: share of them - often none.
+PURGE_AUTHOR_SCAN = 1000
+
+#: Channels with message history that /mod purge can clean.
+PurgeableChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
 
 
 class Moderation(commands.Cog):
@@ -94,7 +102,27 @@ class Moderation(commands.Cog):
             text += f": {reason}"
         return text[:512]
 
-    async def _dm(self, member: discord.Member, text: str) -> bool:
+    async def _retract_dm(
+        self, member: discord.Member | discord.User, guild: discord.Guild
+    ) -> None:
+        """Correct a notice sent ahead of an action that then failed.
+
+        Kick and ban notices must go out first - afterwards there is no mutual
+        server to open a DM through - so when Discord then refuses the action,
+        the member is holding a message saying it happened.
+        """
+        try:
+            await member.send(
+                view=notice(
+                    f"ℹ️ Предыдущее уведомление с сервера **{guild.name}** "
+                    "недействительно — действие не было выполнено.",
+                    accent=COLOR_OK,
+                )
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def _dm(self, member: discord.Member | discord.User, text: str) -> bool:
         """Best-effort notice to the member. Closed DMs are not an error."""
         try:
             await member.send(view=notice(text, accent=COLOR_WARN))
@@ -313,7 +341,9 @@ class Moderation(commands.Cog):
         )
         if moderator is None or interaction.guild is None:
             return
-        if user.timed_out_until is None:
+        # is_timed_out(), not timed_out_until: the timestamp stays set after
+        # the timeout runs out, which made the bot "lift" an expired one.
+        if not user.is_timed_out():
             await self._reply(interaction, "ℹ️ У участника нет активного тайм-аута.")
             return
         try:
@@ -345,19 +375,23 @@ class Moderation(commands.Cog):
             return
         # Send the DM first: after the kick the mutual guild is gone and Discord
         # will not open a DM channel any more.
-        await self._dm(
+        notified = await self._dm(
             user,
             f"👢 Вас выгнали с сервера **{interaction.guild.name}**.\n"
             f"**Причина:** {reason or 'не указана'}",
         )
         try:
             await user.kick(reason=self._reason(moderator, reason))
-        except discord.Forbidden:
-            await self._reply(interaction, "❌ Discord отклонил кик.", accent=COLOR_BAD)
-            return
-        except discord.HTTPException:
-            logger.exception("Kick failed")
-            await self._reply(interaction, "⚠️ Не удалось выгнать участника.", accent=COLOR_BAD)
+        except discord.HTTPException as error:
+            if notified:
+                await self._retract_dm(user, interaction.guild)
+            if isinstance(error, discord.Forbidden):
+                await self._reply(interaction, "❌ Discord отклонил кик.", accent=COLOR_BAD)
+            else:
+                logger.exception("Kick failed")
+                await self._reply(
+                    interaction, "⚠️ Не удалось выгнать участника.", accent=COLOR_BAD
+                )
             return
         await self._reply(interaction, f"👢 {user.mention} выгнан.")
         await self._log(
@@ -378,36 +412,56 @@ class Moderation(commands.Cog):
     async def ban(
         self,
         interaction: discord.Interaction,
-        user: discord.Member,
+        # A User as well as a Member: banning someone who already left - the
+        # usual case after a raid - is a moderator's everyday need.
+        user: discord.Member | discord.User,
         reason: str | None = None,
         delete_days: app_commands.Range[int, 0, 7] = 0,
     ) -> None:
-        moderator = await self._guard(
-            interaction, user, bot_permission="ban_members", action="бан"
-        )
-        if moderator is None or interaction.guild is None:
+        guild = interaction.guild
+        if guild is None or not isinstance(interaction.user, discord.Member):
             return
-        await self._dm(
+        moderator: discord.Member | None = interaction.user
+        if isinstance(user, discord.Member):
+            moderator = await self._guard(
+                interaction, user, bot_permission="ban_members", action="бан"
+            )
+        elif user.id in (interaction.user.id, guild.me.id, guild.owner_id):
+            await self._reply(interaction, "❌ Этого пользователя забанить нельзя.", accent=COLOR_BAD)
+            return
+        elif not guild.me.guild_permissions.ban_members:
+            await self._reply(
+                interaction, "❌ У бота нет права «Банить участников».", accent=COLOR_BAD
+            )
+            return
+        if moderator is None:
+            return
+        # Someone no longer on the server shares no guild with the bot, so a
+        # DM could not be opened; only members are told.
+        notified = isinstance(user, discord.Member) and await self._dm(
             user,
-            f"🔨 Вы забанены на сервере **{interaction.guild.name}**.\n"
+            f"🔨 Вы забанены на сервере **{guild.name}**.\n"
             f"**Причина:** {reason or 'не указана'}",
         )
         try:
-            await interaction.guild.ban(
+            await guild.ban(
                 user,
                 reason=self._reason(moderator, reason),
-                delete_message_days=delete_days,
+                # delete_message_days is deprecated in discord.py 2.x.
+                delete_message_seconds=delete_days * 86_400,
             )
-        except discord.Forbidden:
-            await self._reply(interaction, "❌ Discord отклонил бан.", accent=COLOR_BAD)
-            return
-        except discord.HTTPException:
-            logger.exception("Ban failed")
-            await self._reply(interaction, "⚠️ Не удалось забанить.", accent=COLOR_BAD)
+        except discord.HTTPException as error:
+            if notified:
+                await self._retract_dm(user, guild)
+            if isinstance(error, discord.Forbidden):
+                await self._reply(interaction, "❌ Discord отклонил бан.", accent=COLOR_BAD)
+            else:
+                logger.exception("Ban failed")
+                await self._reply(interaction, "⚠️ Не удалось забанить.", accent=COLOR_BAD)
             return
         await self._reply(interaction, f"🔨 {user.mention} забанен.")
         await self._log(
-            interaction.guild,
+            guild,
             f"🔨 **Бан**\nУчастник: {user} (`{user.id}`)\n"
             f"Модератор: {moderator.mention}\nПричина: {reason or 'не указана'}",
             accent=COLOR_BAD,
@@ -466,7 +520,9 @@ class Moderation(commands.Cog):
     ) -> None:
         channel = interaction.channel
         guild = interaction.guild
-        if guild is None or not isinstance(channel, discord.TextChannel):
+        if guild is None or not isinstance(
+            channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)
+        ):
             await self._reply(
                 interaction, "❌ Команда работает только в текстовом канале.", accent=COLOR_BAD
             )
@@ -480,15 +536,25 @@ class Moderation(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         cutoff = discord.utils.utcnow() - BULK_DELETE_MAX_AGE
 
+        picked = 0
+
         def matches(message: discord.Message) -> bool:
             # Bulk delete silently ignores messages older than 14 days; filter
             # them out so the reported count is the real one.
-            if message.created_at <= cutoff:
+            nonlocal picked
+            if picked >= count or message.created_at <= cutoff:
                 return False
-            return user is None or message.author.id == user.id
+            if user is not None and message.author.id != user.id:
+                return False
+            picked += 1
+            return True
 
         try:
-            deleted = await channel.purge(limit=count, check=matches, reason=f"/mod purge — {interaction.user}")
+            deleted = await channel.purge(
+                limit=count if user is None else PURGE_AUTHOR_SCAN,
+                check=matches,
+                reason=f"/mod purge — {interaction.user}",
+            )
         except discord.Forbidden:
             await interaction.followup.send(
                 view=notice("❌ Недостаточно прав для удаления.", accent=COLOR_BAD),
