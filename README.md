@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 426-test pytest suite (411 offline + 15 end-to-end), ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 665-test pytest suite (650 offline + 15 end-to-end), ruff + mypy clean |
 
 ---
 
@@ -54,7 +54,7 @@ server it is invited to otherwise.
 |---|---|
 | `/play <query>` | Play a track/playlist — YouTube, a **Spotify** track link, `spsearch:`, a direct link, or a local file |
 | `/search <query>` | Search and pick a result from a menu |
-| `/now` · `/queue` | Current track (with progress bar) / the queue |
+| `/now` · `/queue` | Current track / the queue (shown only to you) |
 | `/skip` · `/pause` · `/resume` · `/stop` | Playback control (DJ-gated) |
 | `/seek <1:30>` · `/volume <0-200>` | Jump within the track / session volume (DJ-gated) |
 | `/loop off\|track\|queue` | Repeat mode (DJ-gated) |
@@ -62,6 +62,31 @@ server it is invited to otherwise.
 | `/shuffle` · `/clear` | Shuffle / clear the queue (DJ-gated) |
 | `/autoplay on\|off` | Radio mode — auto-play similar tracks when the queue ends |
 | `/join` · `/jointo <ch>` · `/leave` | Voice channel management |
+
+Every command that changes playback - `/play` included - is accepted only from
+someone **in the bot's voice channel** (admins excepted), as with any music bot.
+
+**The now-playing panel** is one message per server that shows everything and is
+redrawn in place: the track, its state (a countdown your Discord client keeps
+current, so the bot is not editing it every second), volume and repeat mode,
+the next three tracks, and the last action with who did it.
+
+| Control | Does |
+|---|---|
+| ⏮️ | Previous track near the start; otherwise back to the start of this one |
+| ⏸️ / ▶️ | One button; shows the action it will perform |
+| ⏭️ · ⏹️ | Skip (resumes if paused) · stop and clear |
+| 🔀 · 🔁 | Shuffle · repeat: off → queue → track → off (green when on) |
+| 🔉 · 🔊 | Volume −10 / +10 |
+| 📜 | The full queue, shown only to you - no DJ role or voice needed |
+| *Перейти к треку…* | Play a queued track now; those before it are dropped |
+
+Controls that would do nothing are disabled. Command replies are visible only to
+whoever used them - the panel is the public record - and "track added" notices
+remove themselves after a minute. When playback ends the panel turns idle
+instead of being deleted, so the channel is not left with a trail of notices.
+Panels keep working across restarts, and ones left by a previous run are
+removed on startup.
 
 **Community**
 

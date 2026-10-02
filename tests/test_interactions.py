@@ -21,6 +21,7 @@ from tests.interaction_harness import (
     DoubleResponse,
     FakeInteraction,
     drive,
+    find_item,
     interactive_items,
     make_channel,
     make_guild,
@@ -158,6 +159,14 @@ class MagicMessage:
 # --------------------------------------------------------------------------- #
 #  Playback controls
 # --------------------------------------------------------------------------- #
+STEERING_CONTROLS = [
+    "np:back", "np:play_pause", "np:skip", "np:stop",
+    "np:shuffle", "np:loop", "np:vol_down", "np:vol_up", "np:jump",
+]
+ALL_CONTROLS = [*STEERING_CONTROLS, "np:queue"]
+CID_SKIP = "np:skip"
+
+
 class TestPlaybackControls:
     async def _press(self, loaded_bot, label: str, *, member=None):
         from ui.controls import NowPlayingView
@@ -165,20 +174,21 @@ class TestPlaybackControls:
         guild, channel, default_member = scene()
         member = member or default_member
         view = NowPlayingView(loaded_bot.get_cog("Music"))
-        item = next(
-            i for i in interactive_items(view) if getattr(i, "label", "") == label
-        )
+        item = find_item(view, label)
         interaction = interaction_for(guild, channel, member, message=MagicMessage())
+        if isinstance(item, discord.ui.Select):
+            # Discord never sends a select interaction without a choice.
+            interaction.data = {"values": ["0:track"]}
         return await drive(view, item, interaction)
 
-    @pytest.mark.parametrize("label", ["Пауза", "Скип", "Стоп"])
+    @pytest.mark.parametrize("label", ALL_CONTROLS)
     async def test_answers_when_no_player_is_connected(self, loaded_bot, label) -> None:
         """The common real-world case: the panel outlived the voice session."""
         record = await self._press(loaded_bot, label)
         assert record.acknowledged, f"{label} left the interaction hanging"
-        assert record.followups, f"{label} deferred but never told the user anything"
+        assert record.told_user, f"{label} answered but never told the user anything"
 
-    @pytest.mark.parametrize("label", ["Пауза", "Скип", "Стоп"])
+    @pytest.mark.parametrize("label", STEERING_CONTROLS)
     async def test_non_dj_is_refused_without_hanging(self, loaded_bot, label) -> None:
         guild, channel, member = scene()
         dj_role = make_role(555, name="DJ")
@@ -189,14 +199,14 @@ class TestPlaybackControls:
         from ui.controls import NowPlayingView
 
         view = NowPlayingView(loaded_bot.get_cog("Music"))
-        item = next(i for i in interactive_items(view) if getattr(i, "label", "") == label)
+        item = find_item(view, label)
         record = await drive(view, item, interaction_for(guild, channel, member))
         assert record.acks == ["send_message"], f"{label}: DJ refusal must answer once"
 
     async def test_pressing_twice_does_not_double_respond(self, loaded_bot) -> None:
         """A double click reuses neither the record nor the response object."""
         for _ in range(2):
-            record = await self._press(loaded_bot, "Скип")
+            record = await self._press(loaded_bot, CID_SKIP)
             assert record.acknowledged
 
 
@@ -592,7 +602,7 @@ class TestErrorPaths:
 
         guild, channel, member = scene()
         view = NowPlayingView(loaded_bot.get_cog("Music"))
-        item = next(i for i in interactive_items(view) if getattr(i, "label", "") == "Скип")
+        item = find_item(view, CID_SKIP)
 
         async def boom(interaction):
             raise RuntimeError("simulated failure")

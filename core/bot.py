@@ -134,6 +134,8 @@ class MusicBot(commands.Bot):
             message = f"⏳ Помедленнее: попробуйте через {error.retry_after:.1f} с."
         elif isinstance(error, checks.WrongChannel):
             message = f"❌ Используйте команды в <#{error.channel_id}>."
+        elif isinstance(error, checks.NotInBotVoice):
+            message = str(error)  # already carries its own icon
         elif isinstance(
             error,
             (

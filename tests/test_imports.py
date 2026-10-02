@@ -122,9 +122,10 @@ async def test_all_cogs_load_and_register_their_commands(tmp_path, make_settings
 
 async def test_playback_controls_do_not_shadow_view_methods() -> None:
     """A button callback named `stop` would overwrite View.stop()."""
-    from ui.controls import PlaybackControls
+    from ui.controls import ModesRow, TransportRow
 
-    assert not hasattr(PlaybackControls, "stop") or PlaybackControls.stop is ui.View.stop
+    for row in (TransportRow, ModesRow):
+        assert not hasattr(row, "stop") or row.stop is ui.View.stop
 
 
 async def test_persistent_panels_are_registered(tmp_path, make_settings) -> None:

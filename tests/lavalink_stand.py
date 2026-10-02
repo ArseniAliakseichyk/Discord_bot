@@ -25,15 +25,21 @@ import asyncio
 import json
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import aiohttp
 import discord
 import wavelink
+from discord import ui
 from wavelink.websocket import Websocket
 
 from tests.interaction_harness import make_member
+from ui.controls import CID_PLAY_PAUSE
+
+if TYPE_CHECKING:
+    from cogs.music import Music
+    from core.bot import MusicBot
 
 #: The failure from the production log this stand was built to reproduce:
 #: every client refused "АлСми - Базовый минимум", with a mix of transient
@@ -184,10 +190,8 @@ class FakeLavalink:
         if state.loaded is not None:
             self._end(guild_id, state.loaded, "finished")
 
-    def fail_mid_stream(self, guild_id: int, position: int, message: str) -> None:
-        """The loaded track broke off after ``position`` ms of audio."""
-        state = self.guilds[guild_id]
-        assert state.loaded is not None
+    def report_position(self, guild_id: int, position: int) -> None:
+        """A playerUpdate, as Lavalink sends every few seconds while playing."""
         self._socket.push(
             {
                 "op": "playerUpdate",
@@ -195,6 +199,12 @@ class FakeLavalink:
                 "state": {"time": 0, "position": position, "connected": True, "ping": 1},
             }
         )
+
+    def fail_mid_stream(self, guild_id: int, position: int, message: str) -> None:
+        """The loaded track broke off after ``position`` ms of audio."""
+        state = self.guilds[guild_id]
+        assert state.loaded is not None
+        self.report_position(guild_id, position)
         self._exception(guild_id, state.loaded, message)
         self._end(guild_id, state.loaded, "loadFailed")
 
@@ -312,3 +322,78 @@ def make_real_player(bot: discord.Client, lavalink: FakeLavalink, guild: Any) ->
     guild.voice_client = player
     lavalink.players[guild.id] = player
     return player
+
+
+# --------------------------------------------------------------------------- #
+#  The assembled stand used by the player tests (fixture in tests/conftest.py)
+# --------------------------------------------------------------------------- #
+@dataclass
+class Stand:
+    bot: MusicBot
+    music: Music
+    lavalink: FakeLavalink
+    player: wavelink.Player
+    guild: Any
+    home: Any
+
+    @property
+    def gid(self) -> int:
+        return self.guild.id
+
+    async def play(self, *titles: str) -> None:
+        """What /play does: enqueue, start if idle."""
+        for title in titles:
+            self.player.queue.put(self.lavalink.track(title))
+        await self.music.maybe_start(self.player)
+        await self.lavalink.settle()
+
+    async def finish(self) -> None:
+        self.lavalink.finish(self.gid)
+        await self.lavalink.settle()
+
+    def panels(self) -> list[Any]:
+        """Now-playing panels posted, in order (reports are separate)."""
+        return self.panel_messages()
+
+    def reports(self) -> list[str]:
+        return [view_text(v) for _, v in self.posted() if "не удалось" in view_text(v)]
+
+    def posted(self) -> list[tuple[Any, Any]]:
+        """Each message with the view it shows *now* (after any edits)."""
+        out = []
+        for call, message in zip(self.home.send.call_args_list, self.home.sent, strict=True):
+            view = call.kwargs.get("view")
+            if view is not None:
+                out.append((message, message.view or view))
+        return out
+
+    def panel_messages(self) -> list[Any]:
+        """Every message that was posted as a now-playing panel."""
+        return [
+            message
+            for call, message in zip(self.home.send.call_args_list, self.home.sent, strict=True)
+            if call.kwargs.get("view") is not None and is_now_playing(call.kwargs["view"])
+        ]
+
+    def live_panel_view(self) -> Any:
+        """The view of the panel currently on screen."""
+        live = self.music.now_messages.get(self.gid)
+        for message, view in self.posted():
+            if message is live:
+                return view
+        raise AssertionError("no live now-playing panel")
+
+
+def view_text(view: Any) -> str:
+    return "\n".join(
+        item.content for item in view.walk_children() if isinstance(item, ui.TextDisplay)
+    )
+
+
+def is_now_playing(view: Any) -> bool:
+    return any(getattr(i, "custom_id", None) == CID_PLAY_PAUSE for i in view.walk_children())
+
+
+def is_idle(message: Any) -> bool:
+    """Retired: edited into a panel without controls."""
+    return message.view is not None and not is_now_playing(message.view)

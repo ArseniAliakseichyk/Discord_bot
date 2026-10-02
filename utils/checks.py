@@ -48,6 +48,10 @@ class MissingAnnouncePerms(app_commands.CheckFailure):
     """No permission to make announcements."""
 
 
+class NotInBotVoice(app_commands.CheckFailure):
+    """The user is not in the voice channel the bot is playing in."""
+
+
 def guild_authorized() -> CheckDecorator:
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.guild is None:
@@ -131,5 +135,40 @@ def can_announce() -> CheckDecorator:
         raise MissingAnnouncePerms(
             "Нет прав: нужна разрешённая роль или права администратора."
         )
+
+    return app_commands.check(predicate)
+
+
+def bot_voice_refusal(member: discord.Member) -> str | None:
+    """Why ``member`` may not control playback, or ``None`` if they may.
+
+    Only people listening may steer what they hear: someone in another channel,
+    or in none, skipping the track is exactly what every music bot prevents.
+    Admins and server managers are exempt so a stuck bot can always be stopped.
+    When the bot is not in voice there is nothing to protect; the command
+    itself then reports that.
+    """
+    voice = member.guild.voice_client
+    channel = getattr(voice, "channel", None)
+    if channel is None:
+        return None
+    perms = member.guild_permissions
+    if perms.administrator or perms.manage_guild:
+        return None
+    if member.voice is not None and member.voice.channel == channel:
+        return None
+    return f"🎧 Зайдите в голосовой канал {channel.mention}, где играет бот."
+
+
+def in_bot_voice() -> CheckDecorator:
+    """Allow only listeners in the bot's voice channel (admins bypass)."""
+
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return True
+        refusal = bot_voice_refusal(interaction.user)
+        if refusal is None:
+            return True
+        raise NotInBotVoice(refusal)
 
     return app_commands.check(predicate)

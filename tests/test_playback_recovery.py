@@ -17,105 +17,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any
 
-import pytest
 import wavelink
-from discord import ui
 
-from cogs.music import MAX_PLAY_RETRIES, Music
-from core.bot import INITIAL_EXTENSIONS, MusicBot
-from tests.interaction_harness import FakeInteraction, drive, make_guild, make_member
+from cogs.music import MAX_PLAY_RETRIES
+from tests.interaction_harness import FakeInteraction, drive, find_item, make_member
 from tests.lavalink_stand import (
     VIDEO_UNAVAILABLE,
-    FakeLavalink,
-    make_real_player,
+    is_idle,
+    view_text,
 )
-from tests.test_player_lifecycle import make_home_channel
+from ui.controls import CID_PLAY_PAUSE, CID_SKIP
 from utils.playback_failures import MAX_CONSECUTIVE_FAILURES
-
-
-@dataclass
-class Stand:
-    bot: MusicBot
-    music: Music
-    lavalink: FakeLavalink
-    player: wavelink.Player
-    guild: Any
-    home: Any
-
-    @property
-    def gid(self) -> int:
-        return self.guild.id
-
-    async def play(self, *titles: str) -> None:
-        """What /play does: enqueue, start if idle."""
-        for title in titles:
-            self.player.queue.put(self.lavalink.track(title))
-        await self.music.maybe_start(self.player)
-        await self.lavalink.settle()
-
-    async def finish(self) -> None:
-        self.lavalink.finish(self.gid)
-        await self.lavalink.settle()
-
-    def panels(self) -> list[Any]:
-        """Now-playing panels posted, in order (reports are separate)."""
-        return [m for m, v in self._posted() if _is_now_playing(v)]
-
-    def reports(self) -> list[str]:
-        return [_text(v) for _, v in self._posted() if "не удалось" in _text(v)]
-
-    def _posted(self) -> list[tuple[Any, Any]]:
-        out = []
-        for call, message in zip(self.home.send.call_args_list, self.home.sent, strict=True):
-            view = call.kwargs.get("view")
-            if view is not None:
-                out.append((message, view))
-        return out
-
-    def live_panel_view(self) -> Any:
-        """The view of the panel currently on screen."""
-        live = self.music.now_messages.get(self.gid)
-        for message, view in self._posted():
-            if message is live:
-                return view
-        raise AssertionError("no live now-playing panel")
-
-
-def _text(view: Any) -> str:
-    return "\n".join(
-        item.content for item in view.walk_children() if isinstance(item, ui.TextDisplay)
-    )
-
-
-def _is_now_playing(view: Any) -> bool:
-    return "Сейчас играет" in _text(view)
-
-
-@pytest.fixture(params=["batched", "separate"])
-async def stand(request, tmp_path, make_settings):
-    bot = MusicBot(make_settings(DATABASE_PATH=str(tmp_path / "stand.db")))
-    # What login() would do: bind the client to the running loop, which
-    # dispatch() needs to schedule listeners.
-    await bot._async_setup_hook()
-    await bot.db.connect()
-    for extension in INITIAL_EXTENSIONS:
-        await bot.load_extension(extension)
-    lavalink = FakeLavalink(bot, separate=request.param == "separate")
-    lavalink.start()
-    guild = make_guild()
-    player = make_real_player(bot, lavalink, guild)
-    music = bot.get_cog("Music")
-    home = make_home_channel()
-    music.home_channels[guild.id] = home.id
-    bot.get_channel = lambda cid: home if cid == home.id else None  # type: ignore[method-assign]
-    try:
-        yield Stand(bot, music, lavalink, player, guild, home)
-    finally:
-        await lavalink.stop()
-        await bot.db.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -152,7 +65,7 @@ class TestTheProductionLog:
         stand.lavalink.fail("alsmi", times=100)
         await stand.play("alsmi")
         assert len(stand.panels()) == 1
-        assert stand.panels()[0].deleted, "the panel outlived the dead track"
+        assert is_idle(stand.panels()[0]), "the panel kept its controls for a dead track"
 
     async def test_the_real_cause_reaches_the_log(self, stand, caplog) -> None:
         """It used to say "источник не отдал поток" for every failure."""
@@ -194,7 +107,7 @@ class TestRecovery:
         stand.lavalink.fail("song", times=1)
         await stand.play("song")
         view = stand.live_panel_view()
-        button = next(i for i in view.walk_children() if getattr(i, "label", None) == "Пауза")
+        button = find_item(view, CID_PLAY_PAUSE)
         interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
         record = await drive(view, button, interaction)
         assert record.acknowledged
@@ -407,12 +320,13 @@ class TestUserActions:
     async def test_skip_button_on_the_last_track_ends_the_queue(self, stand) -> None:
         await stand.play("only")
         view = stand.live_panel_view()
-        button = next(i for i in view.walk_children() if getattr(i, "label", None) == "Скип")
+        button = find_item(view, CID_SKIP)
         interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
         record = await drive(view, button, interaction)
         await stand.lavalink.settle()
         assert record.acknowledged and not record.followups
-        assert stand.panels()[0].deleted
+        assert is_idle(stand.panels()[0])
+        assert "Очередь закончилась" in view_text(stand.panels()[0].view)
         assert stand.guild.id not in stand.music.now_messages
 
     async def test_stop_during_retries_is_silent_and_final(self, stand) -> None:
@@ -446,13 +360,13 @@ class TestBookkeeping:
         """One event, one message: the failure, not "queue finished" on top."""
         stand.lavalink.fail("bad", times=100)
         await stand.play("bad")
-        texts = [_text(v) for _, v in stand._posted()]
+        texts = [view_text(v) for _, v in stand.posted()]
         assert not [t for t in texts if "Очередь закончилась" in t]
 
     async def test_a_finished_last_track_does_announce_it(self, stand) -> None:
         await stand.play("song")
         await stand.finish()
-        texts = [_text(v) for _, v in stand._posted()]
+        texts = [view_text(v) for _, v in stand.posted()]
         assert [t for t in texts if "Очередь закончилась" in t]
 
     async def test_an_exception_without_a_player_is_logged_not_raised(self, stand, caplog) -> None:
@@ -530,7 +444,7 @@ class TestPausedPlayer:
     async def test_the_skip_button_while_paused(self, stand) -> None:
         await self._paused_on(stand, "a", "b")
         view = stand.live_panel_view()
-        button = next(i for i in view.walk_children() if getattr(i, "label", None) == "Скип")
+        button = find_item(view, CID_SKIP)
         interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
         record = await drive(view, button, interaction)
         await stand.lavalink.settle()
@@ -542,11 +456,11 @@ class TestPausedPlayer:
         await stand.play("a")
         user = make_member(1, guild=stand.guild)
 
-        def button(label: str):
+        def button(key: str):
             view = stand.live_panel_view()
-            return view, next(i for i in view.walk_children() if getattr(i, "label", None) == label)
+            return view, find_item(view, key)
 
-        view, pause = button("Пауза")
+        view, pause = button(CID_PLAY_PAUSE)
         await drive(view, pause, FakeInteraction(user=user, guild=stand.guild))
         await stand.lavalink.settle()
         assert stand.player.paused and stand.lavalink.guilds[stand.gid].paused
@@ -581,7 +495,7 @@ class TestPersistentPanel:
 
         await stand.play("a", "b")
         template = next(v for v in stand.bot.persistent_views if isinstance(v, NowPlayingView))
-        skip = next(i for i in template.walk_children() if getattr(i, "label", None) == "Скип")
+        skip = find_item(template, CID_SKIP)
         interaction = FakeInteraction(user=make_member(1, guild=stand.guild), guild=stand.guild)
         record = await drive(template, skip, interaction)
         await stand.lavalink.settle()

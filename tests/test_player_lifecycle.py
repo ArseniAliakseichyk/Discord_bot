@@ -19,8 +19,10 @@ import wavelink
 from core.bot import INITIAL_EXTENSIONS, MusicBot
 from core.db import PlayerSession
 from tests.interaction_harness import (
+    idle_text,
     make_channel,
     make_guild,
+    make_home_channel,
     make_member,
     make_player,
     make_track,
@@ -37,49 +39,6 @@ async def bot(tmp_path, make_settings):
         yield instance
     finally:
         await instance.db.close()
-
-
-class SentMessage:
-    """A now-playing message that records whether it was edited or deleted."""
-
-    _counter = 0
-
-    def __init__(self) -> None:
-        SentMessage._counter += 1
-        self.id = SentMessage._counter
-        self.deleted = False
-        self.edits = 0
-
-    async def edit(self, **kwargs):
-        self.edits += 1
-        return self
-
-    async def delete(self) -> None:
-        if self.deleted:
-            raise discord.NotFound(MagicMock(status=404), "already deleted")
-        self.deleted = True
-
-
-def make_home_channel(channel_id: int = 55):
-    """The text channel the bot posts now-playing panels into.
-
-    Built on a TextChannel spec so it satisfies the
-    ``isinstance(channel, discord.abc.Messageable)`` guard in the listeners;
-    a plain object makes them return early and the test proves nothing.
-    """
-    channel = make_channel(channel_id)
-    channel.sent = []
-    channel.texts = []
-
-    async def send(content: str | None = None, **kwargs):
-        if content is not None:
-            channel.texts.append(content)
-        message = SentMessage()
-        channel.sent.append(message)
-        return message
-
-    channel.send = AsyncMock(side_effect=send)
-    return channel
 
 
 def setup_guild(bot: MusicBot):
@@ -251,7 +210,8 @@ class TestStopRace:
         await music.stop_player(player)
 
         assert player.queue.is_empty and player.auto_queue.is_empty
-        assert home.sent[0].deleted
+        assert "остановлено" in (idle_text(home.sent[0]) or "")
+        assert len(home.sent) == 1, "stopping must not post a second message"
         assert guild.id not in music.now_messages
 
     async def test_stop_releases_the_stopping_flag(self, bot) -> None:
@@ -283,8 +243,8 @@ class TestDisconnects:
         assert await bot.db.load_sessions() == []
         assert guild.id not in music.home_channels
         assert guild.id not in music.now_messages
-        assert home.sent[0].deleted
-        assert any("бездействия" in t for t in home.texts)
+        assert "бездействия" in (idle_text(home.sent[0]) or "")
+        assert len(home.sent) == 1, "the panel says it; no separate notice"
 
     async def test_being_kicked_from_voice_cleans_up(self, bot) -> None:
         music, guild, player, home = setup_guild(bot)
@@ -302,7 +262,7 @@ class TestDisconnects:
 
         assert await bot.db.load_sessions() == []
         assert guild.id not in music.home_channels
-        assert home.sent[0].deleted
+        assert "отключили" in (idle_text(home.sent[0]) or "")
 
     async def test_last_human_leaving_disconnects_the_bot(self, bot) -> None:
         music, guild, player, home = setup_guild(bot)
@@ -504,7 +464,7 @@ class TestQueueEnd:
         player.current = None
         await music.on_wavelink_track_end(self._end(player, make_track("only")))
 
-        assert panel.deleted, "the finished track's panel was left in the channel"
+        assert idle_text(panel) is not None, "the finished track's panel kept its buttons"
         assert guild.id not in music.now_messages
 
     async def test_the_channel_is_told_the_queue_ended(self, bot) -> None:
@@ -512,7 +472,8 @@ class TestQueueEnd:
         await music.on_wavelink_track_start(start_payload(player, make_track("only")))
         player.playing = False
         await music.on_wavelink_track_end(self._end(player, make_track("only")))
-        assert len(home.sent) == 2, "no closing message was posted"
+        assert "Очередь закончилась" in (idle_text(home.sent[0]) or "")
+        assert len(home.sent) == 1, "the panel says it; no second message"
 
     async def test_panel_survives_between_tracks(self, bot) -> None:
         """With more queued, track_start replaces the panel; do not pre-empt it."""
@@ -572,20 +533,23 @@ class TestNoDuplicateEndNotice:
     async def test_non_endings_do_not_announce_the_queue(self, bot, reason) -> None:
         music, guild, player, home = setup_guild(bot)
         await music.on_wavelink_track_start(start_payload(player, make_track("a")))
-        home.sent.clear()
+        panel = home.sent[0]
         player.playing = False
 
         await music.on_wavelink_track_end(self._end(player, make_track("a"), reason))
-        assert not home.sent, f"reason={reason} should not end the queue"
+        assert len(home.sent) == 1, f"reason={reason} posted a message"
+        assert idle_text(panel) is None, f"reason={reason} retired the panel"
+        assert music.now_messages.get(guild.id) is panel
 
     @pytest.mark.parametrize("reason", ["finished", "stopped"])
     async def test_real_endings_do_announce(self, bot, reason) -> None:
         music, guild, player, home = setup_guild(bot)
         await music.on_wavelink_track_start(start_payload(player, make_track("a")))
-        home.sent.clear()
         player.playing = False
 
         await music.on_wavelink_track_end(self._end(player, make_track("a"), reason))
-        assert len(home.sent) == 1, f"reason={reason} should close the queue out"
+        assert "Очередь закончилась" in (idle_text(home.sent[0]) or ""), (
+            f"reason={reason} should close the queue out"
+        )
 
 

@@ -10,6 +10,8 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import time
+from collections import deque
 from pathlib import Path
 
 import discord
@@ -25,10 +27,17 @@ from core.constants import (
     MSG_QUEUE_EMPTY,
 )
 from core.db import PlayerSession, SavedTrack
-from ui.controls import NowPlayingView, now_playing_panel
+from ui.controls import (
+    NowPlayingView,
+    idle_panel,
+    now_playing_panel,
+    plain,
+    queue_view,
+    track_key,
+)
 from ui.search import SearchView
 from ui.v2 import PanelView, make_panel
-from utils.checks import guild_authorized, has_dj, in_command_channel
+from utils.checks import guild_authorized, has_dj, in_bot_voice, in_command_channel
 from utils.formatting import format_duration, format_ms, parse_position
 from utils.playback_failures import (
     MAX_PLAY_RETRIES,
@@ -56,6 +65,27 @@ LOOP_REPLIES = {
     "off": "➡️ Повтор выключен.",
     "track": "🔂 Повтор текущего трека.",
     "queue": "🔁 Повтор всей очереди.",
+}
+
+#: Back restarts the current track when further in than this, and only goes
+#: to the previous track near the start - what Spotify and YouTube Music do.
+BACK_RESTART_MS = 5_000
+
+#: Panel buttons a user may press within ``BUTTON_WINDOW_S`` seconds. Enough
+#: for a few volume clicks; stops a held-down mouse from flooding Discord.
+BUTTON_RATE = 6
+BUTTON_WINDOW_S = 10.0
+
+#: "Track added" replies are removed after this many seconds: the panel's
+#: "Далее" list already shows what was added, and by whom.
+ADDED_NOTICE_TTL = 60.0
+#: Failure notices stay a little longer - they explain something.
+FAILURE_NOTICE_TTL = 120.0
+
+LOOP_NOTES = {
+    wavelink.QueueMode.normal: "➡️ Повтор выключен",
+    wavelink.QueueMode.loop: "🔂 Повтор трека",
+    wavelink.QueueMode.loop_all: "🔁 Повтор очереди",
 }
 
 #: Search prefixes understood by Lavalink and its plugins. A query that already
@@ -165,6 +195,17 @@ class Music(commands.Cog):
         # events arrive together, wavelink has already cleared player.current
         # (and with it the position) before the exception listener runs.
         self._positions: dict[int, int] = {}
+        # The latest playback action per guild, shown at the foot of the panel
+        # so everyone sees who paused or skipped, without a chat message each.
+        self._last_actions: dict[int, tuple[str, int]] = {}
+        # Recent button presses per user, for BUTTON_RATE.
+        self._presses: dict[int, deque[float]] = {}
+        # One panel operation at a time per guild. Each is several Discord
+        # calls (delete the old panel, post the new one, record it); two track
+        # starts in quick succession interleaved at those awaits, both deleted
+        # "the old" panel, both posted, and one panel was left behind with
+        # live buttons.
+        self._panel_locks: dict[int, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ #
     #  Helpers
@@ -273,7 +314,9 @@ class Music(commands.Cog):
             # paused the next /play would start silently.
             await player.play(player.queue.get(), paused=False)
 
-    async def skip_current(self, player: wavelink.Player) -> bool:
+    async def skip_current(
+        self, player: wavelink.Player, user: discord.abc.User | None = None
+    ) -> bool:
         """Move to the next track. False when there is nothing to move to.
 
         Shared by /skip and the panel button so both behave the same in the
@@ -295,6 +338,7 @@ class Music(commands.Cog):
         ):
             queue.delete(0)
         if player.current is not None:
+            self.note_action(player.guild.id, user, "⏭️ Пропущен трек")
             was_paused = player.paused
             await player.skip(force=True)
             if was_paused:
@@ -306,11 +350,155 @@ class Music(commands.Cog):
                 await player.pause(False)
             return True
         if not queue.is_empty:
+            self.note_action(player.guild.id, user, "⏭️ Очередь продолжена")
             self._failures.resume_queue(player.guild.id)
             _set_autoplay_errors(player, 0)
             await player.play(queue.get(), paused=False)
             return True
         return withdrawn is not None
+
+    # ------------------------------------------------------------------ #
+    #  Controls shared by slash commands and the panel
+    # ------------------------------------------------------------------ #
+    # Each changes the player, records who did it, and redraws the panel
+    # unless the caller redraws it itself (a button answers by editing the
+    # pressed message, which acknowledges the interaction in the same call).
+    async def set_paused(
+        self,
+        player: wavelink.Player,
+        paused: bool,
+        user: discord.abc.User | None,
+        *,
+        redraw: bool = True,
+    ) -> None:
+        await player.pause(paused)
+        if player.guild is not None:
+            self.note_action(player.guild.id, user, "⏸️ Пауза" if paused else "▶️ Продолжено")
+        if redraw:
+            await self.refresh_now_message(player)
+
+    async def toggle_pause(
+        self, player: wavelink.Player, user: discord.abc.User | None, *, redraw: bool = True
+    ) -> bool:
+        paused = not player.paused
+        await self.set_paused(player, paused, user, redraw=redraw)
+        return paused
+
+    async def go_back(self, player: wavelink.Player, user: discord.abc.User | None) -> bool:
+        """⏮: restart the track, or play the previous one near its start.
+
+        False when nothing is playing. The previous track is the history entry
+        before the current one; the current track goes back to the head of the
+        queue, so pressing ⏭ afterwards returns to it, as in any player.
+        """
+        current = player.current
+        if current is None or player.guild is None:
+            return False
+        guild_id = player.guild.id
+        history = player.queue.history
+        items = list(history) if history is not None else []
+        here = len(items) - 1 if items and track_key(items[-1]) == track_key(current) else len(items)
+        if player.position > BACK_RESTART_MS or here == 0 or history is None:
+            if current.is_seekable and not current.is_stream:
+                self.note_action(guild_id, user, "⏮️ Трек сначала")
+                await player.seek(0)
+                await self.refresh_now_message(player)
+            return True
+        previous = items[here - 1]
+        if here < len(items):
+            history.delete(here)
+        history.delete(here - 1)
+        player.queue.put_at(0, current)
+        self.note_action(guild_id, user, "⏮️ Предыдущий трек")
+        # play() adds it back to history, and replacing the current track ends
+        # it as "replaced", which AutoPlay leaves alone.
+        await player.play(previous, paused=False)
+        await self.persist_queue(player)
+        return True
+
+    async def jump_to(
+        self,
+        player: wavelink.Player,
+        index: int,
+        key: str,
+        user: discord.abc.User | None,
+    ) -> wavelink.Playable | None:
+        """Play a queued track now, dropping the ones before it (as Spotify does).
+
+        ``key`` identifies the track the user saw. If the queue changed since
+        the panel was drawn, the same track is looked up again; if it is gone,
+        nothing happens and None is returned.
+        """
+        if player.guild is None:
+            return None
+        queue = player.queue
+        items = list(queue)
+        if not (0 <= index < len(items) and track_key(items[index]) == key):
+            index = next((i for i, t in enumerate(items) if track_key(t) == key), -1)
+            if index < 0:
+                return None
+        track = items[index]
+        self._failures.cancel_pending(player.guild.id)
+        for _ in range(index + 1):
+            queue.delete(0)
+        if queue.mode is wavelink.QueueMode.loop_all and queue.history is not None:
+            for skipped in items[:index]:  # they come round again with the queue
+                queue.history.put(skipped)
+        self.note_action(player.guild.id, user, f"⤵️ Включён «{plain(track.title)}»")
+        await player.play(track, paused=False)
+        await self.persist_queue(player)
+        return track
+
+    async def shuffle_queue(
+        self, player: wavelink.Player, user: discord.abc.User | None, *, redraw: bool = True
+    ) -> bool:
+        if len(player.queue) < 2 or player.guild is None:
+            return False
+        player.queue.shuffle()
+        self.note_action(player.guild.id, user, "🔀 Очередь перемешана")
+        await self.persist_queue(player)
+        if redraw:
+            await self.refresh_now_message(player)
+        return True
+
+    async def set_loop(
+        self,
+        player: wavelink.Player,
+        mode: wavelink.QueueMode,
+        user: discord.abc.User | None,
+        *,
+        redraw: bool = True,
+    ) -> None:
+        player.queue.mode = mode
+        if player.guild is not None:
+            self.note_action(player.guild.id, user, LOOP_NOTES[mode])
+        if redraw:
+            await self.refresh_now_message(player)
+
+    async def set_volume(
+        self,
+        player: wavelink.Player,
+        value: int,
+        user: discord.abc.User | None,
+        *,
+        redraw: bool = True,
+    ) -> bool:
+        try:
+            await player.set_volume(value)
+        except (wavelink.LavalinkException, wavelink.NodeException):
+            logger.warning("Could not set the volume", exc_info=True)
+            return False
+        if player.guild is not None:
+            self.note_action(player.guild.id, user, f"🔊 Громкость {value}%")
+        if redraw:
+            await self.refresh_now_message(player)
+        return True
+
+    async def _announce(self, interaction: discord.Interaction, text: str) -> None:
+        """A public reply that removes itself after ADDED_NOTICE_TTL."""
+        message = await interaction.followup.send(text, wait=True)
+        with contextlib.suppress(discord.HTTPException):
+            await message.delete(delay=ADDED_NOTICE_TTL)
 
     @staticmethod
     def _to_saved(track: wavelink.Playable) -> SavedTrack:
@@ -338,23 +526,122 @@ class Music(commands.Cog):
         except sqlite3.Error:
             logger.exception("Failed to persist session")
 
+    def _panel_lock(self, guild_id: int) -> asyncio.Lock:
+        return self._panel_locks.setdefault(guild_id, asyncio.Lock())
+
     async def refresh_now_message(self, player: wavelink.Player) -> None:
         if player.guild is None:
             return
-        message = self.now_messages.get(player.guild.id)
-        if message is not None and player.current is not None:
-            try:
-                await message.edit(view=now_playing_panel(player.current, player, self))
-            except discord.HTTPException:
-                pass
+        async with self._panel_lock(player.guild.id):
+            message = self.now_messages.get(player.guild.id)
+            if message is not None and player.current is not None:
+                try:
+                    await message.edit(
+                        view=now_playing_panel(player.current, player, self)
+                    )
+                except discord.HTTPException:
+                    pass
 
     async def clear_now_message(self, guild_id: int) -> None:
+        async with self._panel_lock(guild_id):
+            await self._drop_panel(guild_id)
+
+    async def _drop_panel(self, guild_id: int) -> None:
+        """Delete the live panel. Caller holds the panel lock."""
         message = self.now_messages.pop(guild_id, None)
         if message is not None:
             try:
                 await message.delete()
             except discord.HTTPException:
                 pass
+            await self._forget_panel(guild_id)
+
+    async def _post_panel(
+        self,
+        player: wavelink.Player,
+        track: wavelink.Playable,
+        channel: discord.abc.Messageable,
+    ) -> None:
+        """Replace the guild's panel with one for ``track``."""
+        assert player.guild is not None
+        guild_id = player.guild.id
+        async with self._panel_lock(guild_id):
+            await self._drop_panel(guild_id)
+            try:
+                message = await channel.send(view=now_playing_panel(track, player, self))
+            except discord.HTTPException:
+                logger.exception("Failed to send now-playing message")
+                return
+            self.now_messages[guild_id] = message
+            try:
+                await self.bot.db.save_now_panel(guild_id, message.channel.id, message.id)
+            except sqlite3.Error:
+                logger.exception("Failed to record the now-playing panel")
+
+    async def retire_panel(
+        self, guild_id: int, text: str, *, note: str | None = None
+    ) -> None:
+        """Turn the live panel idle instead of deleting it.
+
+        One message keeps the record ("queue ended", "stopped by X") where a
+        deleted panel plus a fresh notice used to leave two, and the buttons go
+        with it so nobody presses controls of a player that is gone.
+        """
+        async with self._panel_lock(guild_id):
+            message = self.now_messages.pop(guild_id, None)
+            if message is None:
+                return
+            try:
+                await message.edit(view=idle_panel(text, note=note))
+            except discord.HTTPException:
+                logger.debug("Could not retire the now-playing panel", exc_info=True)
+            await self._forget_panel(guild_id)
+
+    async def _forget_panel(self, guild_id: int) -> None:
+        try:
+            await self.bot.db.clear_now_panel(guild_id)
+        except sqlite3.Error:
+            logger.exception("Failed to forget the now-playing panel")
+
+    def adopt_panel(self, interaction: discord.Interaction) -> None:
+        """Track a panel pressed after a restart as the live one.
+
+        The process that posted it is gone, so it is in no dict; adopting it
+        lets the next track replace it instead of leaving it behind.
+        """
+        message = interaction.message
+        if (
+            interaction.guild_id is None
+            or message is None
+            or message.flags.ephemeral
+            or interaction.guild_id in self.now_messages
+        ):
+            return
+        self.now_messages[interaction.guild_id] = message
+
+    def note_action(
+        self, guild_id: int, user: discord.abc.User | None, text: str
+    ) -> None:
+        who = f" — {plain(user.display_name)}" if user is not None else ""
+        self._last_actions[guild_id] = (f"{text}{who}", int(time.time()))
+
+    def last_action(self, guild_id: int) -> str | None:
+        entry = self._last_actions.get(guild_id)
+        if entry is None:
+            return None
+        text, at = entry
+        return f"{text} · <t:{at}:R>"
+
+    def button_cooldown(self, user_id: int) -> float:
+        """Seconds until ``user_id`` may press again; 0 when they may now."""
+        now = time.monotonic()
+        presses = self._presses.setdefault(user_id, deque())
+        while presses and now - presses[0] > BUTTON_WINDOW_S:
+            presses.popleft()
+        if len(presses) >= BUTTON_RATE:
+            return BUTTON_WINDOW_S - (now - presses[0])
+        presses.append(now)
+        return 0.0
 
     def _forget_guild(self, guild_id: int) -> None:
         """Drop per-guild bookkeeping so the dicts don't grow without bound."""
@@ -362,9 +649,13 @@ class Music(commands.Cog):
         self.now_messages.pop(guild_id, None)
         self._failures.forget(guild_id)
         self._positions.pop(guild_id, None)
+        self._last_actions.pop(guild_id, None)
+        self._panel_locks.pop(guild_id, None)
         self._stopping.discard(guild_id)
 
-    async def stop_player(self, player: wavelink.Player) -> None:
+    async def stop_player(
+        self, player: wavelink.Player, *, by: discord.abc.User | None = None
+    ) -> None:
         if player.guild is None:
             return
         guild_id = player.guild.id
@@ -378,7 +669,10 @@ class Music(commands.Cog):
             self._failures.silence(guild_id)
             if player.playing or player.current is not None:
                 await player.skip(force=True)
-            await self.clear_now_message(guild_id)
+            if player.paused:
+                await player.pause(False)  # so the next /play is heard
+            who = f" — {plain(by.display_name)}" if by is not None else ""
+            await self.retire_panel(guild_id, f"⏹️ Воспроизведение остановлено{who}")
             await self.bot.db.clear_session(guild_id)
         finally:
             self._stopping.discard(guild_id)
@@ -401,6 +695,7 @@ class Music(commands.Cog):
         self._set_requester(track, member)
         player.queue.put(track)
         await self.maybe_start(player)
+        await self.refresh_now_message(player)
         await self.persist_queue(player)
         return True
 
@@ -419,6 +714,7 @@ class Music(commands.Cog):
     @app_commands.checks.cooldown(1, 5.0)
     @guild_authorized()
     @in_command_channel()
+    @in_bot_voice()
     async def play(self, interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer()
         player = await self.ensure_player(interaction)
@@ -453,8 +749,9 @@ class Music(commands.Cog):
             for track in tracks:
                 self._set_requester(track, interaction.user)  # type: ignore[arg-type]
                 player.queue.put(track)
-            await interaction.followup.send(
-                f"🎵 Добавлен плейлист **{result.name}** — {len(tracks)} треков."
+            await self._announce(
+                interaction,
+                f"🎵 Добавлен плейлист **{plain(result.name)}** — {len(tracks)} треков.",
             )
         else:
             track = result[0]
@@ -464,9 +761,10 @@ class Music(commands.Cog):
                 return
             self._set_requester(track, interaction.user)  # type: ignore[arg-type]
             player.queue.put(track)
-            await interaction.followup.send(f"🎵 Добавлен трек: **{track.title}**")
+            await self._announce(interaction, f"🎵 Добавлен трек: **{plain(track.title)}**")
 
         await self.maybe_start(player)
+        await self.refresh_now_message(player)  # "Далее" now lists it
         await self.persist_queue(player)
 
     @app_commands.command(name="search", description="Найти трек и выбрать из списка")
@@ -476,6 +774,7 @@ class Music(commands.Cog):
     @app_commands.checks.cooldown(1, 5.0)
     @guild_authorized()
     @in_command_channel()
+    @in_bot_voice()
     async def search(self, interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer()
         if (
@@ -528,54 +827,38 @@ class Music(commands.Cog):
         if player is None or (player.queue.is_empty and player.current is None):
             await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
             return
-        lines: list[str] = []
-        if player.current is not None:
-            lines.append(f"▶️ **{player.current.title}**\n")
-        for i, track in enumerate(player.queue, 1):
-            if i > QUEUE_PAGE:
-                lines.append(f"-# … и ещё {len(player.queue) - QUEUE_PAGE}")
-                break
-            lines.append(f"`{i:>2}.` {track.title}")
-
-        total_ms = sum(t.length for t in player.queue if not t.is_stream and t.length)
-        footer = [f"-# Треков в очереди: {len(player.queue)}"]
-        if total_ms:
-            footer.append(f"общая длительность {format_ms(total_ms)}")
-        if player.queue.mode is not wavelink.QueueMode.normal:
-            footer.append(
-                "повтор трека"
-                if player.queue.mode is wavelink.QueueMode.loop
-                else "повтор очереди"
-            )
-        lines.append(" · ".join(footer))
-
-        view = PanelView(timeout=None)
-        view.add_item(make_panel(title="📜 Очередь", body="\n".join(lines)))
+        view = queue_view(player, page_size=QUEUE_PAGE)
         await interaction.response.send_message(view=view, ephemeral=True)
 
     @app_commands.command(name="shuffle", description="Перемешать очередь")
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def shuffle(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
-        if player is not None and not player.queue.is_empty:
-            player.queue.shuffle()
-            await self.persist_queue(player)
-            await interaction.response.send_message("🔀 Очередь перемешана.")
+        if player is not None and await self.shuffle_queue(player, interaction.user):
+            await interaction.response.send_message("🔀 Очередь перемешана.", ephemeral=True)
         else:
-            await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
+            await interaction.response.send_message(
+                "🔀 Перемешивать нечего — в очереди меньше двух треков.", ephemeral=True
+            )
 
     @app_commands.command(name="clear", description="Очистить очередь")
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def clear(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
-        if player is not None and not player.queue.is_empty:
+        if player is not None and not player.queue.is_empty and interaction.guild:
+            # A queued retry is part of the queue; clearing withdraws it too.
+            self._failures.cancel_pending(interaction.guild.id)
             player.queue.clear()
+            self.note_action(interaction.guild.id, interaction.user, "🧹 Очередь очищена")
             await self.persist_queue(player)
-            await interaction.response.send_message("🧹 Очередь очищена.")
+            await self.refresh_now_message(player)
+            await interaction.response.send_message("🧹 Очередь очищена.", ephemeral=True)
         else:
             await interaction.response.send_message(MSG_QUEUE_EMPTY, ephemeral=True)
 
@@ -604,6 +887,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def volume(
         self,
         interaction: discord.Interaction,
@@ -615,17 +899,15 @@ class Music(commands.Cog):
                 MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
             return
-        try:
-            await player.set_volume(value)
-        except (wavelink.LavalinkException, wavelink.NodeException):
-            logger.warning("Could not set the volume", exc_info=True)
+        if not await self.set_volume(player, value, interaction.user):
             await interaction.response.send_message(
                 "⚠️ Не удалось изменить громкость.", ephemeral=True
             )
             return
         await interaction.response.send_message(
             f"🔊 Громкость: **{value}%** (только для текущей сессии — "
-            "постоянное значение задаётся в `/settings volume`)."
+            "постоянное значение задаётся в `/settings volume`).",
+            ephemeral=True,
         )
 
     @app_commands.command(name="seek", description="Перемотать текущий трек")
@@ -633,6 +915,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def seek(self, interaction: discord.Interaction, position: str) -> None:
         player = player_of(interaction.guild)
         if player is None or player.current is None:
@@ -666,8 +949,14 @@ class Music(commands.Cog):
                 "⚠️ Не удалось перемотать.", ephemeral=True
             )
             return
+        if interaction.guild is not None:
+            self.note_action(
+                interaction.guild.id, interaction.user, f"⏩ Перемотано на {format_ms(target)}"
+            )
         await self.refresh_now_message(player)
-        await interaction.response.send_message(f"⏩ Перемотано на **{format_ms(target)}**.")
+        await interaction.response.send_message(
+            f"⏩ Перемотано на **{format_ms(target)}**.", ephemeral=True
+        )
 
     @app_commands.command(name="loop", description="Режим повтора")
     @app_commands.describe(mode="Что повторять")
@@ -681,6 +970,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def loop(
         self, interaction: discord.Interaction, mode: app_commands.Choice[str]
     ) -> None:
@@ -690,9 +980,8 @@ class Music(commands.Cog):
                 MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
             return
-        player.queue.mode = LOOP_MODES[mode.value]
-        await self.refresh_now_message(player)
-        await interaction.response.send_message(LOOP_REPLIES[mode.value])
+        await self.set_loop(player, LOOP_MODES[mode.value], interaction.user)
+        await interaction.response.send_message(LOOP_REPLIES[mode.value], ephemeral=True)
 
     @app_commands.command(name="remove", description="Убрать трек из очереди")
     @app_commands.describe(position="Номер трека в очереди (см. /queue)")
@@ -700,6 +989,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def remove(
         self, interaction: discord.Interaction, position: app_commands.Range[int, 1]
     ) -> None:
@@ -713,10 +1003,15 @@ class Music(commands.Cog):
             )
             return
         index = position - 1  # the queue is 0-based, the command is 1-based
-        title = player.queue.peek(index).title
+        title = plain(player.queue.peek(index).title)
         player.queue.delete(index)
+        if interaction.guild is not None:
+            self.note_action(interaction.guild.id, interaction.user, f"🗑️ Убран «{title}»")
         await self.persist_queue(player)
-        await interaction.response.send_message(f"🗑️ Убрано из очереди: **{title}**")
+        await self.refresh_now_message(player)
+        await interaction.response.send_message(
+            f"🗑️ Убрано из очереди: **{title}**", ephemeral=True
+        )
 
     @app_commands.command(name="move", description="Переместить трек в очереди")
     @app_commands.describe(position="Какой трек переместить", to="На какую позицию")
@@ -724,6 +1019,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def move(
         self,
         interaction: discord.Interaction,
@@ -752,18 +1048,20 @@ class Music(commands.Cog):
         player.queue.delete(position - 1)
         player.queue.put_at(to - 1, track)
         await self.persist_queue(player)
+        await self.refresh_now_message(player)
         await interaction.response.send_message(
-            f"↕️ **{track.title}** — теперь на позиции **{to}**."
+            f"↕️ **{plain(track.title)}** — теперь на позиции **{to}**.", ephemeral=True
         )
 
     @app_commands.command(name="skip", description="Пропустить текущий трек")
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def skip(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
-        if player is not None and await self.skip_current(player):
-            await interaction.response.send_message("⏭️ Пропущено.")
+        if player is not None and await self.skip_current(player, interaction.user):
+            await interaction.response.send_message("⏭️ Пропущено.", ephemeral=True)
         else:
             await interaction.response.send_message(
                 MSG_NOTHING_PLAYING, ephemeral=True
@@ -773,12 +1071,12 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def pause(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
         if player is not None and player.playing and not player.paused:
-            await player.pause(True)
-            await self.refresh_now_message(player)
-            await interaction.response.send_message("⏸️ Пауза.")
+            await self.set_paused(player, True, interaction.user)
+            await interaction.response.send_message("⏸️ Пауза.", ephemeral=True)
         else:
             await interaction.response.send_message(
                 "❌ Нечего ставить на паузу.", ephemeral=True
@@ -788,12 +1086,12 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def resume(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
         if player is not None and player.paused:
-            await player.pause(False)
-            await self.refresh_now_message(player)
-            await interaction.response.send_message("▶️ Продолжаю.")
+            await self.set_paused(player, False, interaction.user)
+            await interaction.response.send_message("▶️ Продолжаю.", ephemeral=True)
         else:
             await interaction.response.send_message(
                 "❌ Воспроизведение не на паузе.", ephemeral=True
@@ -803,12 +1101,13 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def stop(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
         if player is not None:
-            await self.stop_player(player)
+            await self.stop_player(player, by=interaction.user)
             await interaction.response.send_message(
-                "⏹️ Воспроизведение остановлено, очередь очищена."
+                "⏹️ Воспроизведение остановлено, очередь очищена.", ephemeral=True
             )
         else:
             await interaction.response.send_message(
@@ -826,6 +1125,7 @@ class Music(commands.Cog):
     @guild_authorized()
     @has_dj()
     @in_command_channel()
+    @in_bot_voice()
     async def autoplay(
         self, interaction: discord.Interaction, mode: app_commands.Choice[str]
     ) -> None:
@@ -835,12 +1135,20 @@ class Music(commands.Cog):
                 MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
             return
-        if mode.value == "on":
-            player.autoplay = wavelink.AutoPlayMode.enabled
-            await interaction.response.send_message("📻 Автоплей включён.")
-        else:
-            player.autoplay = wavelink.AutoPlayMode.partial
-            await interaction.response.send_message("⏹️ Автоплей выключен.")
+        enabled = mode.value == "on"
+        player.autoplay = (
+            wavelink.AutoPlayMode.enabled if enabled else wavelink.AutoPlayMode.partial
+        )
+        if interaction.guild is not None:
+            self.note_action(
+                interaction.guild.id,
+                interaction.user,
+                "📻 Автоплей включён" if enabled else "📻 Автоплей выключен",
+            )
+        await self.refresh_now_message(player)
+        await interaction.response.send_message(
+            "📻 Автоплей включён." if enabled else "⏹️ Автоплей выключен.", ephemeral=True
+        )
 
     # ------------------------------------------------------------------ #
     #  Wavelink events
@@ -877,14 +1185,7 @@ class Music(commands.Cog):
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if not isinstance(channel, discord.abc.Messageable):
             return
-        await self.clear_now_message(player.guild.id)
-        try:
-            message = await channel.send(
-                view=now_playing_panel(payload.track, player, self)
-            )
-            self.now_messages[player.guild.id] = message
-        except discord.HTTPException:
-            logger.exception("Failed to send now-playing message")
+        await self._post_panel(player, payload.track, channel)
         await self.persist_queue(player)
 
     @commands.Cog.listener()
@@ -928,27 +1229,18 @@ class Music(commands.Cog):
             return
         if player.playing or not player.queue.is_empty or not player.auto_queue.is_empty:
             return
-        await self.clear_now_message(player.guild.id)
-        channel_id = self.home_channels.get(player.guild.id)
-        channel = self.bot.get_channel(channel_id) if channel_id else None
-        if isinstance(channel, discord.abc.Messageable):
-            view = PanelView(timeout=None)
-            view.add_item(make_panel(body="🏁 Очередь закончилась."))
-            with contextlib.suppress(discord.HTTPException):
-                await channel.send(view=view)
+        await self.retire_panel(player.guild.id, "🏁 Очередь закончилась")
 
     async def _report_playback_problem(
         self, player: wavelink.Player | None, track: wavelink.Playable, text: str
     ) -> None:
-        """Tell the channel a track could not be played, and drop its panel.
+        """Tell the channel a track could not be played.
 
-        Without this the now-playing panel keeps advertising a track that never
-        started, and the only trace is a Lavalink stack trace in the container
-        log that the people using the bot never see.
+        The notice removes itself after FAILURE_NOTICE_TTL; the panel shows
+        the lasting state (the next track, or idle when nothing follows).
         """
         if player is None or player.guild is None:
             return
-        await self.clear_now_message(player.guild.id)
         channel_id = self.home_channels.get(player.guild.id)
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if not isinstance(channel, discord.abc.Messageable):
@@ -962,7 +1254,7 @@ class Music(commands.Cog):
             )
         )
         try:
-            await channel.send(view=view)
+            await channel.send(view=view, delete_after=FAILURE_NOTICE_TTL)
         except discord.HTTPException:
             logger.debug("Could not report the playback problem", exc_info=True)
 
@@ -1050,6 +1342,18 @@ class Music(commands.Cog):
         else:
             text = f"{reason} Играю следующий трек."
         await self._report_playback_problem(player, track, text)
+        # With a next track, its track_start replaces the panel. Without one
+        # nothing would, and the panel would go on advertising a dead track.
+        if decision.verdict is Verdict.HALT:
+            await self.retire_panel(
+                guild_id,
+                "⏸️ Очередь приостановлена",
+                note="Несколько треков подряд не воспроизвелись. `/skip` — следующий.",
+            )
+        elif player.queue.is_empty:
+            await self.retire_panel(
+                guild_id, f"⚠️ Не удалось воспроизвести «{plain(track.title)}»"
+            )
 
     def _steer_autoplay(
         self, player: wavelink.Player, track: wavelink.Playable, decision: Decision
@@ -1114,17 +1418,10 @@ class Music(commands.Cog):
         if player.guild is None:
             return
         guild_id = player.guild.id
-        channel_id = self.home_channels.get(guild_id)
-        await self.clear_now_message(guild_id)
+        await self.retire_panel(guild_id, "💤 Отключился из-за бездействия")
         await player.disconnect()
         await self.bot.db.clear_session(guild_id)
         self._forget_guild(guild_id)
-        channel = self.bot.get_channel(channel_id) if channel_id else None
-        if isinstance(channel, discord.abc.Messageable):
-            try:
-                await channel.send("💤 Отключился из-за бездействия.")
-            except discord.HTTPException:
-                pass
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -1140,7 +1437,7 @@ class Music(commands.Cog):
             and before.channel is not None
             and after.channel is None
         ):
-            await self.clear_now_message(member.guild.id)
+            await self.retire_panel(member.guild.id, "👋 Бота отключили от голосового канала")
             await self.bot.db.clear_session(member.guild.id)
             self._forget_guild(member.guild.id)
             return
@@ -1153,7 +1450,7 @@ class Music(commands.Cog):
             return
         if not any(not m.bot for m in player.channel.members):
             guild_id = member.guild.id
-            await self.clear_now_message(guild_id)
+            await self.retire_panel(guild_id, "👋 Все вышли из голосового канала")
             await player.disconnect()
             await self.bot.db.clear_session(guild_id)
             self._forget_guild(guild_id)
@@ -1174,7 +1471,26 @@ class Music(commands.Cog):
         self._restored = True
         await self._restore_sessions()
 
+    async def _remove_stale_panels(self) -> None:
+        """Delete panels a previous process left behind.
+
+        Their buttons still work (the view is persistent) but they show a
+        track from before the restart; a restored session posts a fresh one.
+        """
+        try:
+            panels = await self.bot.db.take_now_panels()
+        except sqlite3.Error:
+            logger.exception("Failed to load the previous now-playing panels")
+            return
+        for _guild_id, channel_id, message_id in panels:
+            message = self.bot.get_partial_messageable(channel_id).get_partial_message(
+                message_id
+            )
+            with contextlib.suppress(discord.HTTPException):
+                await message.delete()
+
     async def _restore_sessions(self) -> None:
+        await self._remove_stale_panels()
         try:
             sessions = await self.bot.db.load_sessions()
         except sqlite3.Error:

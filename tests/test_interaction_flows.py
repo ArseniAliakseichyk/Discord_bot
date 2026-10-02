@@ -20,6 +20,7 @@ from tests.interaction_harness import (
     DoubleResponse,
     FakeInteraction,
     drive,
+    find_item,
     interactive_items,
     make_channel,
     make_guild,
@@ -28,6 +29,7 @@ from tests.interaction_harness import (
     make_role,
     make_track,
 )
+from ui.controls import CID_PLAY_PAUSE, CID_SKIP, CID_STOP
 
 
 @pytest.fixture
@@ -45,10 +47,15 @@ async def bot(tmp_path, make_settings):
 class Message:
     """Stands in for the message a component lives on."""
 
+    _ids = iter(range(1000, 10**9))
+
     def __init__(self) -> None:
-        self.id = 1
+        # Distinct ids, as real messages have: the cog tells the live panel
+        # apart from other copies by id.
+        self.id = next(Message._ids)
         self.edits = 0
         self.deleted = False
+        self.flags = discord.MessageFlags()
 
     async def edit(self, **kwargs):
         self.edits += 1
@@ -69,12 +76,7 @@ def scene():
 
 def press(view, label: str, guild, channel, member, *, values=None):
     """Build the interaction for one press of ``label``."""
-    item = next(
-        i
-        for i in interactive_items(view)
-        if getattr(i, "label", None) == label
-        or (label in (getattr(i, "placeholder", "") or ""))
-    )
+    item = find_item(view, label)
     interaction = FakeInteraction(
         user=member, guild=guild, channel=channel, message=Message(), values=values
     )
@@ -85,7 +87,7 @@ def press(view, label: str, guild, channel, member, *, values=None):
 #  Inventory: nothing may be added without a test noticing
 # --------------------------------------------------------------------------- #
 EXPECTED_COMPONENTS = {
-    "NowPlayingView": ["Пауза", "Скип", "Стоп"],
+    "NowPlayingView": ["⏮️", "⏸️", "⏭️", "⏹️", "🔀", "🔁", "🔉", "🔊", "📜", "<select>"],
     "RulesPanel": ["Команды бота", "Связаться с администрацией", "Согласен с правилами"],
     "TicketControls": ["Взять в работу", "Закрыть тикет"],
     "GigaBuilderView": [
@@ -108,7 +110,8 @@ def labels_of(view) -> list[str]:
     out = []
     for item in interactive_items(view):
         label = getattr(item, "label", None)
-        out.append(label if label else "<select>")
+        emoji = getattr(item, "emoji", None)
+        out.append(label or (str(emoji) if emoji else "<select>"))
     return sorted(out)
 
 
@@ -189,7 +192,7 @@ class TestPlaybackBehaviour:
         music.now_messages[guild.id] = message
 
         view = self._view(bot)
-        item, interaction = press(view, "Пауза", guild, channel, member)
+        item, interaction = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, interaction)
 
         player.pause.assert_awaited_once_with(True)
@@ -202,7 +205,7 @@ class TestPlaybackBehaviour:
         guild, channel, member = scene()
         player = make_player(guild, playing=False, paused=True)
         view = now_playing_panel(player.current, player, bot.get_cog("Music"))
-        item, interaction = press(view, "Продолжить", guild, channel, member)
+        item, interaction = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, interaction)
         player.pause.assert_awaited_once_with(False)
 
@@ -210,7 +213,7 @@ class TestPlaybackBehaviour:
         guild, channel, member = scene()
         player = make_player(guild)
         view = self._view(bot)
-        item, interaction = press(view, "Скип", guild, channel, member)
+        item, interaction = press(view, CID_SKIP, guild, channel, member)
         await drive(view, item, interaction)
         player.skip.assert_awaited_once_with(force=True)
 
@@ -221,7 +224,7 @@ class TestPlaybackBehaviour:
         await bot.db.save_session(guild.id, 77, channel.id, [])
 
         view = self._view(bot)
-        item, interaction = press(view, "Стоп", guild, channel, member)
+        item, interaction = press(view, CID_STOP, guild, channel, member)
         await drive(view, item, interaction)
 
         assert player.queue.is_empty, "stop must empty the queue"
@@ -236,13 +239,13 @@ class TestPlaybackBehaviour:
         player = make_player(guild, playing=True, paused=False)
 
         view = now_playing_panel(player.current, player, bot.get_cog("Music"))
-        item, first = press(view, "Пауза", guild, channel, member)
+        item, first = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, first)
         assert player.pause.await_args.args == (True,)
 
         player.paused = True
         view = now_playing_panel(player.current, player, bot.get_cog("Music"))
-        item, second = press(view, "Продолжить", guild, channel, member)
+        item, second = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, second)
         assert player.pause.await_args.args == (False,)
         assert player.pause.await_count == 2
@@ -254,9 +257,9 @@ class TestPlaybackBehaviour:
         player = make_player(guild, playing=True, paused=False)
 
         for label, expected, paused_after in (
-            ("Пауза", True, True),
-            ("Продолжить", False, False),
-            ("Пауза", True, True),
+            (CID_PLAY_PAUSE, True, True),
+            (CID_PLAY_PAUSE, False, False),
+            (CID_PLAY_PAUSE, True, True),
         ):
             view = now_playing_panel(player.current, player, bot.get_cog("Music"))
             item, interaction = press(view, label, guild, channel, member)
@@ -271,15 +274,15 @@ class TestPlaybackBehaviour:
         player = make_player(guild)
         view = self._view(bot)
 
-        item, interaction = press(view, "Стоп", guild, channel, member)
+        item, interaction = press(view, CID_STOP, guild, channel, member)
         await drive(view, item, interaction)
 
         # stop_player leaves the player attached but empty
         player.playing = False
         player.current = None
-        item, interaction = press(view, "Скип", guild, channel, member)
+        item, interaction = press(view, CID_SKIP, guild, channel, member)
         record = await drive(view, item, interaction)
-        assert record.followups, "skipping nothing must tell the user"
+        assert record.told_user, "skipping nothing must tell the user"
 
     async def test_two_users_pressing_at_once_stay_consistent(self, bot) -> None:
         """Concurrent presses must not lose an acknowledgement."""
@@ -288,8 +291,8 @@ class TestPlaybackBehaviour:
         make_player(guild, playing=True, paused=False)
         view = self._view(bot)
 
-        item_a, ix_a = press(view, "Пауза", guild, channel, member)
-        item_b, ix_b = press(view, "Скип", guild, channel, other)
+        item_a, ix_a = press(view, CID_PLAY_PAUSE, guild, channel, member)
+        item_b, ix_b = press(view, CID_SKIP, guild, channel, other)
         await asyncio.gather(drive(view, item_a, ix_a), drive(view, item_b, ix_b))
 
         assert ix_a.record.acknowledged and ix_b.record.acknowledged
@@ -575,29 +578,25 @@ class TestPlayPauseToggle:
         return view, guild, channel, member, player
 
     def _toggle(self, view):
-        return next(
-            i
-            for i in interactive_items(view)
-            if getattr(i, "label", "") in {"Пауза", "Продолжить"}
-        )
+        return find_item(view, CID_PLAY_PAUSE)
 
     async def test_shows_pause_while_playing(self, bot) -> None:
         view, *_ = self._panel(bot, paused=False)
-        assert self._toggle(view).label == "Пауза"
+        assert str(self._toggle(view).emoji) == "⏸️"
 
     async def test_shows_resume_while_paused(self, bot) -> None:
         view, *_ = self._panel(bot, paused=True)
-        assert self._toggle(view).label == "Продолжить"
+        assert str(self._toggle(view).emoji) == "▶️"
 
     async def test_pressing_while_playing_pauses(self, bot) -> None:
         view, guild, channel, member, player = self._panel(bot, paused=False)
-        item, interaction = press(view, "Пауза", guild, channel, member)
+        item, interaction = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, interaction)
         player.pause.assert_awaited_once_with(True)
 
     async def test_pressing_while_paused_resumes(self, bot) -> None:
         view, guild, channel, member, player = self._panel(bot, paused=True)
-        item, interaction = press(view, "Продолжить", guild, channel, member)
+        item, interaction = press(view, CID_PLAY_PAUSE, guild, channel, member)
         await drive(view, item, interaction)
         player.pause.assert_awaited_once_with(False)
 
@@ -606,7 +605,7 @@ class TestPlayPauseToggle:
         toggles = [
             i
             for i in interactive_items(view)
-            if getattr(i, "label", "") in {"Пауза", "Продолжить"}
+            if str(getattr(i, "emoji", "")) in {"⏸️", "▶️"}
         ]
         assert len(toggles) == 1
 
@@ -615,14 +614,12 @@ class TestPlayPauseToggle:
 
         guild, channel, member = scene()
         view = NowPlayingView(bot.get_cog("Music"))
-        item, interaction = press(view, "Пауза", guild, channel, member)
+        item, interaction = press(view, CID_PLAY_PAUSE, guild, channel, member)
         record = await drive(view, item, interaction)
         assert record.acknowledged
 
     async def test_stop_is_not_styled_as_a_danger(self, bot) -> None:
         """Requested: the stop button should look like the others."""
         view, *_ = self._panel(bot, paused=False)
-        stop = next(
-            i for i in interactive_items(view) if getattr(i, "label", "") == "Стоп"
-        )
+        stop = find_item(view, CID_STOP)
         assert stop.style is discord.ButtonStyle.secondary

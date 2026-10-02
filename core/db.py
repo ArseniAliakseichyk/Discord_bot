@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS player_sessions (
     text_channel_id  INTEGER
 );
 
+-- Where each guild's live now-playing panel is, so a restart can remove the
+-- panels the previous process left behind with buttons still on them.
+CREATE TABLE IF NOT EXISTS now_panels (
+    guild_id   INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS saved_queues (
     guild_id  INTEGER NOT NULL,
     position  INTEGER NOT NULL,
@@ -406,6 +414,34 @@ class Database:
                 "DELETE FROM player_sessions WHERE guild_id = ?", (guild_id,)
             )
             await conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))
+
+    # ------------------------------------------------------------------ #
+    #  Live now-playing panels
+    # ------------------------------------------------------------------ #
+    async def save_now_panel(self, guild_id: int, channel_id: int, message_id: int) -> None:
+        async with self._transaction() as conn:
+            await conn.execute(
+                """INSERT INTO now_panels (guild_id, channel_id, message_id)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       channel_id = excluded.channel_id,
+                       message_id = excluded.message_id""",
+                (guild_id, channel_id, message_id),
+            )
+
+    async def clear_now_panel(self, guild_id: int) -> None:
+        async with self._transaction() as conn:
+            await conn.execute("DELETE FROM now_panels WHERE guild_id = ?", (guild_id,))
+
+    async def take_now_panels(self) -> list[tuple[int, int, int]]:
+        """Return every recorded panel as (guild, channel, message) and forget them."""
+        async with self._transaction() as conn:
+            async with conn.execute(
+                "SELECT guild_id, channel_id, message_id FROM now_panels"
+            ) as cur:
+                rows = await cur.fetchall()
+            await conn.execute("DELETE FROM now_panels")
+        return [(row["guild_id"], row["channel_id"], row["message_id"]) for row in rows]
 
     # ------------------------------------------------------------------ #
     #  Ticket system configuration
