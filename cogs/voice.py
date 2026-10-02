@@ -11,7 +11,7 @@ from discord.ext import commands
 from core.bot import MusicBot
 from core.constants import MSG_BOT_NOT_CONNECTED, MSG_JOIN_VOICE_FIRST
 from ui.v2 import PanelView, make_panel
-from utils.checks import guild_authorized, has_dj
+from utils.checks import guild_authorized, has_dj, in_bot_voice
 from utils.player import connect_and_configure, player_of
 
 logger = logging.getLogger("bot.voice")
@@ -21,11 +21,15 @@ class Voice(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
 
-    async def _cleanup(self, guild_id: int) -> None:
+    async def _retire_panel(self, guild_id: int, text: str) -> None:
+        """Turn the now-playing panel idle, the same as the music cog does.
+
+        Done before disconnecting: the bot's own voice-state event then finds
+        no panel left, instead of racing this command to delete it.
+        """
         music = self.bot.get_cog("Music")
         if music is not None:
-            await music.clear_now_message(guild_id)  # type: ignore[attr-defined]
-        await self.bot.db.clear_session(guild_id)
+            await music.retire_panel(guild_id, text)  # type: ignore[attr-defined]
 
     @app_commands.command(name="join", description="Подключить бота к вашему голосовому каналу")
     @guild_authorized()
@@ -47,7 +51,9 @@ class Voice(commands.Cog):
             return
         channel = interaction.user.voice.channel
         await connect_and_configure(channel, self.bot)
-        await interaction.response.send_message(f"🔊 Подключился к `{channel.name}`.")
+        await interaction.response.send_message(
+            f"🔊 Подключился к `{channel.name}`.", ephemeral=True
+        )
 
     @app_commands.command(
         name="jointo", description="Подключить бота к указанному голосовому каналу"
@@ -55,6 +61,9 @@ class Voice(commands.Cog):
     @app_commands.describe(channel="Имя или ID голосового канала")
     @guild_authorized()
     @has_dj()
+    # Moving the bot takes the music away from everyone listening, so only
+    # one of them (or an admin) may do it.
+    @in_bot_voice()
     async def jointo(self, interaction: discord.Interaction, channel: str) -> None:
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -109,6 +118,7 @@ class Voice(commands.Cog):
     @app_commands.command(name="leave", description="Отключить бота от голосового канала")
     @guild_authorized()
     @has_dj()
+    @in_bot_voice()
     async def leave(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
         if player is None or interaction.guild is None:
@@ -116,9 +126,15 @@ class Voice(commands.Cog):
                 MSG_BOT_NOT_CONNECTED, ephemeral=True
             )
             return
+        guild_id = interaction.guild.id
+        await self._retire_panel(
+            guild_id, f"👋 Бот отключён — {interaction.user.display_name}"
+        )
         await player.disconnect()
-        await self._cleanup(interaction.guild.id)
-        await interaction.response.send_message("👋 Отключился и очистил очередь.")
+        await self.bot.db.clear_session(guild_id)
+        await interaction.response.send_message(
+            "👋 Отключился и очистил очередь.", ephemeral=True
+        )
 
 
 async def setup(bot: MusicBot) -> None:

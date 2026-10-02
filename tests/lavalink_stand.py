@@ -130,10 +130,12 @@ class FakeLavalink:
         self.status = wavelink.NodeStatus.CONNECTED
         self.session_id = "fake"
         self.players: dict[int, wavelink.Player] = {}
+        self._players = self.players  # the name wavelink's Player uses
         self._inactive_channel_tokens = None
         self._inactive_player_timeout = None
         self.script: dict[str, deque[str]] = defaultdict(deque)
         self.plays: list[str] = []
+        self.destroyed: list[int] = []
         self.guilds: dict[int, _GuildState] = defaultdict(_GuildState)
         self._tracks: dict[str, dict[str, Any]] = {}
         self._socket = _Socket(separate=separate)
@@ -170,6 +172,12 @@ class FakeLavalink:
             self._end(guild_id, state.loaded, "replaced")
         self._load(guild_id, encoded)
         return {}
+
+    async def _destroy_player(self, guild_id: int) -> None:
+        """DELETE /players/{guild}: Lavalink drops the player without events."""
+        await asyncio.sleep(0)
+        self.guilds[guild_id].loaded = None
+        self.destroyed.append(guild_id)
 
     # -- scripting -----------------------------------------------------------
     def register(self, track: wavelink.Playable) -> wavelink.Playable:
@@ -315,6 +323,9 @@ def make_real_player(bot: discord.Client, lavalink: FakeLavalink, guild: Any) ->
     voice.id = 77
     voice.guild = guild
     voice.members = [make_member(5, guild=guild)]
+    voice.mention = "<#77>"
+    # What VoiceProtocol.cleanup() needs to unregister the voice client.
+    voice._get_voice_client_key = lambda: (guild.id, "guild_id")
     player = wavelink.Player(bot, voice, nodes=[lavalink])  # type: ignore[list-item]
     player._guild = guild
     player._connected = True

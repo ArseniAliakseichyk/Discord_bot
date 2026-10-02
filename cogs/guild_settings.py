@@ -122,7 +122,11 @@ class GuildSettingsCog(commands.Cog):
             return
         await self.bot.db.update_settings(interaction.guild.id, default_volume=value)
         player = player_of(interaction.guild)
-        if player is not None:
+        music = self.bot.get_cog("Music")
+        if player is not None and music is not None:
+            # Through the music cog, so the live panel shows the new volume.
+            await music.set_volume(player, value, interaction.user)  # type: ignore[attr-defined]
+        elif player is not None:
             try:
                 await player.set_volume(value)
             except (wavelink.LavalinkException, wavelink.NodeException):
