@@ -12,6 +12,7 @@ attaching commands to another cog's group object.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -20,7 +21,7 @@ from discord.ext import commands
 
 from core.bot import MusicBot
 from core.constants import EMBED_COLOR
-from core.db import Ticket
+from core.db import Ticket, TicketConfig
 from ui.tickets import (
     CATEGORY_LABELS,
     DEFAULT_RULES,
@@ -60,6 +61,39 @@ def _channel_name(number: int, member: discord.abc.User, subject: str) -> str:
 class Tickets(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
+        # Ticket creation runs one at a time per guild: the number is read,
+        # the channel named after it, then the row inserted - and the open
+        # ticket limit is checked - without another submission in between.
+        self._creating: dict[int, asyncio.Lock] = {}
+        # Channel renames wait in the background. Discord allows two per
+        # channel per ten minutes, and discord.py waits out a rate limit inside
+        # the awaiting call - which used to freeze the Close button for
+        # minutes after a quick claim. Only the latest wanted name is kept.
+        self._wanted_names: dict[int, str] = {}
+        self._renamers: dict[int, asyncio.Task[None]] = {}
+
+    def rename_later(self, channel: discord.TextChannel, name: str) -> None:
+        """Rename ``channel`` without making the caller wait for Discord."""
+        self._wanted_names[channel.id] = name[:100]
+        task = self._renamers.get(channel.id)
+        if task is None or task.done():
+            self._renamers[channel.id] = asyncio.create_task(self._rename_loop(channel))
+
+    async def _rename_loop(self, channel: discord.TextChannel) -> None:
+        try:
+            while (name := self._wanted_names.pop(channel.id, None)) is not None:
+                if channel.name == name:
+                    continue
+                try:
+                    await channel.edit(name=name)
+                except discord.HTTPException:
+                    logger.debug("Could not rename ticket channel %s", channel.id, exc_info=True)
+        finally:
+            self._renamers.pop(channel.id, None)
+
+    async def cog_unload(self) -> None:
+        for task in self._renamers.values():
+            task.cancel()
 
     # ------------------------------------------------------------------ #
     #  Helpers
@@ -219,6 +253,36 @@ class Tickets(commands.Cog):
             )
             return
 
+        async with self._creating.setdefault(guild.id, asyncio.Lock()):
+            await self._create_ticket(
+                interaction, guild, member, config, parent, category, subject, body
+            )
+
+    async def _create_ticket(
+        self,
+        interaction: discord.Interaction,
+        guild: discord.Guild,
+        member: discord.Member,
+        config: TicketConfig,
+        parent: discord.CategoryChannel,
+        category: str,
+        subject: str,
+        body: str,
+    ) -> None:
+        # Checked again here, not only when the form was opened: several forms
+        # can be open at once, and each submission would otherwise pass.
+        open_count = await self.bot.db.open_tickets_for(guild.id, member.id)
+        if open_count >= MAX_OPEN_TICKETS:
+            await interaction.followup.send(
+                view=notice(
+                    f"❌ У вас уже {open_count} открытых обращений. "
+                    "Дождитесь ответа по ним, прежде чем создавать новое."
+                ),
+                ephemeral=True,
+            )
+            return
+        number = await self.bot.db.next_ticket_number(guild.id)
+
         support_role = guild.get_role(config.support_role_id or 0)
         overwrites: dict[
             discord.Role | discord.Member | discord.Object,
@@ -240,7 +304,9 @@ class Tickets(commands.Cog):
 
         try:
             channel = await guild.create_text_channel(
-                name=_channel_name(1, member, subject),  # renamed below with the id
+                # Named once, with the final number: every rename counts
+                # against Discord's two-per-ten-minutes channel limit.
+                name=_channel_name(number, member, subject),
                 category=parent,
                 overwrites=overwrites,
                 reason=f"Тикет от {member} ({member.id})",
@@ -279,10 +345,9 @@ class Tickets(commands.Cog):
             )
             return
 
-        try:
-            await channel.edit(name=_channel_name(ticket.number, member, subject))
-        except discord.HTTPException:
-            logger.debug("Could not rename the ticket channel", exc_info=True)
+        if ticket.number != number:
+            # Only if another process allocated in between; not expected.
+            self.rename_later(channel, _channel_name(ticket.number, member, subject))
 
         mention = support_role.mention if support_role else "Администрация"
         await channel.send(
@@ -346,10 +411,7 @@ class Tickets(commands.Cog):
                 )
             except discord.HTTPException:
                 logger.warning("Could not grant the ticket author access", exc_info=True)
-            try:
-                await channel.edit(name=f"claimed-{channel.name}"[:100])
-            except discord.HTTPException:
-                logger.debug("Could not rename the claimed ticket", exc_info=True)
+            self.rename_later(channel, f"claimed-{channel.name}")
 
         await interaction.edit_original_response(
             view=TicketControls(
@@ -408,11 +470,10 @@ class Tickets(commands.Cog):
                     )
                 except discord.HTTPException:
                     logger.warning("Could not revoke the author's access", exc_info=True)
-            new_name = f"closed-{channel.name.removeprefix('claimed-')}"
-            try:
-                await channel.edit(name=new_name[:100])
-            except discord.HTTPException:
-                logger.debug("Could not rename the closed ticket", exc_info=True)
+            # The wanted name, not channel.name: a claim rename may still be
+            # queued, in which case the channel has not been renamed yet.
+            current = self._wanted_names.get(channel.id, channel.name)
+            self.rename_later(channel, f"closed-{current.removeprefix('claimed-')}")
 
         if from_panel:
             claimed = guild.get_member(ticket.claimed_by) if ticket.claimed_by else None

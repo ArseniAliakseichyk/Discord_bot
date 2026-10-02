@@ -613,6 +613,20 @@ class Database:
         async with self._transaction() as conn:
             await conn.execute("DELETE FROM tickets WHERE channel_id = ?", (channel_id,))
 
+    async def next_ticket_number(self, guild_id: int) -> int:
+        """The number create_ticket would allocate now.
+
+        Only a forecast - create_ticket allocates for real inside its own
+        transaction. The tickets cog serialises creation per guild, so in
+        practice the two agree and the channel can be named right away.
+        """
+        async with self.conn.execute(
+            "SELECT COALESCE(MAX(number), 0) + 1 AS next FROM tickets WHERE guild_id = ?",
+            (guild_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row["next"] if row else 1
+
     async def open_tickets_for(self, guild_id: int, owner_id: int) -> int:
         async with self.conn.execute(
             "SELECT COUNT(*) AS n FROM tickets "
