@@ -13,7 +13,7 @@ from discord.ext import commands
 from core.bot import MusicBot
 from ui.builder import GigaBuilderView
 from ui.v2 import send_panel
-from utils.checks import can_announce
+from utils.checks import can_announce, guild_authorized
 
 
 class Builder(commands.Cog):
@@ -27,6 +27,7 @@ class Builder(commands.Cog):
         channel="Канал для публикации",
         mention_role="Роль для упоминания при публикации",
     )
+    @guild_authorized()
     @can_announce()
     async def constructor(
         self,

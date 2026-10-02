@@ -64,7 +64,6 @@ class TestGeneratedFromTheTree:
         from cogs.help import CATEGORIES
 
         loaded = {name for name in CATEGORIES if bot.get_cog(name) is not None}
-        # Owner-only commands carry no default_permissions, so they show too.
         assert set(pages) <= loaded
         assert {"Music", "Voice", "Tickets", "Moderation"} <= set(pages)
 
@@ -139,3 +138,28 @@ class TestCategoriesMatchTheCogs:
         assert not uncategorised, (
             f"these cogs have commands but no help page: {uncategorised}"
         )
+
+
+class TestOwnerCommands:
+    """Owner commands are refused to everyone else, so nobody else is shown them."""
+
+    async def test_a_plain_member_does_not_see_them(self, bot) -> None:
+        pages = bot.get_cog("Help").build_pages(member_with(discord.Permissions.none()))
+        assert "Owner" not in pages
+
+    async def test_a_server_admin_does_not_see_them_either(self, bot) -> None:
+        pages = bot.get_cog("Help").build_pages(member_with(discord.Permissions.all()))
+        assert "Owner" not in pages
+        assert not {"authorize", "deauthorize", "servers"} & advertised(pages)
+
+    async def test_the_owner_sees_them(self, bot) -> None:
+        pages = bot.get_cog("Help").build_pages(
+            member_with(discord.Permissions.all()), owner=True
+        )
+        assert {"authorize", "deauthorize", "servers"} <= advertised(pages)
+
+    async def test_the_command_picker_hides_them_from_non_admins(self, bot) -> None:
+        owner_cog = bot.get_cog("Owner")
+        for command in owner_cog.walk_app_commands():
+            assert command.default_permissions is not None
+            assert command.default_permissions.administrator, command.name

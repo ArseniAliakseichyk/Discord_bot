@@ -233,7 +233,12 @@ class TestStreaming:
             f"no audio stream ({status}): {detail}. Check that the yt-cipher "
             f"service is running and plugins.youtube.remoteCipher points at it."
         )
-        assert detail.startswith("audio/"), f"expected audio, got {detail}"
+        # Either an audio-only format, or itag 18: a muxed 360p MP4 whose AAC
+        # track Lavalink plays. Measured on 2026-10-02, every video came back
+        # as the latter - YouTube served the audio-only formats SABR-only, with
+        # no URL - and that fallback is what the pinned main snapshot added
+        # ("Fix itag 18 playback"). It costs bandwidth, not sound quality.
+        assert detail.startswith(("audio/", "video/mp4")), f"no playable format: {detail}"
 
     def test_the_cipher_server_is_configured(self) -> None:
         """A missing remoteCipher is the difference between working and not."""

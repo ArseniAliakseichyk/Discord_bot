@@ -30,6 +30,10 @@ class Owner(commands.Cog):
     @app_commands.command(name="authorize", description="Авторизовать сервер (владелец)")
     @app_commands.describe(guild_id="ID сервера; по умолчанию — текущий")
     @is_owner()
+    # Hidden from the command picker for everyone but server admins. Discord
+    # applies default permissions only inside servers, so the bot owner can
+    # still use these in DMs - which is how a first server gets authorized.
+    @app_commands.default_permissions(administrator=True)
     async def authorize(
         self, interaction: discord.Interaction, guild_id: str | None = None
     ) -> None:
@@ -55,6 +59,10 @@ class Owner(commands.Cog):
     )
     @app_commands.describe(guild_id="ID сервера; по умолчанию — текущий")
     @is_owner()
+    # Hidden from the command picker for everyone but server admins. Discord
+    # applies default permissions only inside servers, so the bot owner can
+    # still use these in DMs - which is how a first server gets authorized.
+    @app_commands.default_permissions(administrator=True)
     async def deauthorize(
         self, interaction: discord.Interaction, guild_id: str | None = None
     ) -> None:
@@ -88,6 +96,10 @@ class Owner(commands.Cog):
         name="servers", description="Список серверов бота и их статус (владелец)"
     )
     @is_owner()
+    # Hidden from the command picker for everyone but server admins. Discord
+    # applies default permissions only inside servers, so the bot owner can
+    # still use these in DMs - which is how a first server gets authorized.
+    @app_commands.default_permissions(administrator=True)
     async def servers(self, interaction: discord.Interaction) -> None:
         authorized = await self.bot.db.authorized_guilds()
         if not self.bot.guilds:

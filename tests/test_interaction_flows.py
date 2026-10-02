@@ -169,7 +169,7 @@ class _FakeHelpCog:
     but it would make the inventory below look emptier than it is.
     """
 
-    def build_pages(self, user):
+    def build_pages(self, user, *, owner=False):
         from cogs.help import HelpPage
 
         return {"Music": HelpPage("Музыка", "🎶", "сводка", "**/play** — тест")}

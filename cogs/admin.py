@@ -13,7 +13,7 @@ from discord.ext import commands
 from core.bot import MusicBot
 from core.constants import PREVIEW_TIMEOUT, V2_TEXT_LIMIT
 from ui.v2 import PanelView, make_panel, send_panel, split_text
-from utils.checks import can_announce
+from utils.checks import can_announce, guild_authorized
 from utils.mentions import mentions_for_role
 from utils.validation import is_http_url
 
@@ -243,6 +243,7 @@ class Admin(commands.Cog):
         image_url="URL картинки (большое изображение)",
         thumbnail_url="URL маленькой иконки",
     )
+    @guild_authorized()
     @can_announce()
     async def announce(
         self,
@@ -263,6 +264,15 @@ class Admin(commands.Cog):
                 "❌ Канал для анонса не настроен.", ephemeral=True
             )
             return
+
+        # A link that is not http(s) would be dropped from the post without a
+        # word; say so now, while the author can still fix it.
+        for label, url in (("image_url", image_url), ("thumbnail_url", thumbnail_url)):
+            if url and not is_http_url(url):
+                await interaction.response.send_message(
+                    f"❌ `{label}` должен быть ссылкой вида `https://…`.", ephemeral=True
+                )
+                return
 
         role: discord.Role | None = None
         if mention_role:

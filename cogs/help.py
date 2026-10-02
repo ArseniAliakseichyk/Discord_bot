@@ -64,11 +64,11 @@ class HelpSelect(ui.ActionRow["HelpPanel"]):
 class HelpPanel(PanelView):
     """Category menu over the live command tree."""
 
-    def __init__(self, cog: Help, user: discord.abc.User) -> None:
+    def __init__(self, cog: Help, user: discord.abc.User, *, owner: bool = False) -> None:
         super().__init__(timeout=HELP_TIMEOUT)
         self.cog = cog
         self.user = user
-        self.pages = cog.build_pages(user)
+        self.pages = cog.build_pages(user, owner=owner)
         self._render(MAIN_PAGE)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -169,15 +169,29 @@ class Help(commands.Cog):
             node = node.parent
         return required if required.value else None
 
+    @staticmethod
+    def _owner_only(command: app_commands.Command | app_commands.Group) -> bool:
+        return any(
+            "is_owner" in getattr(check, "__qualname__", "")
+            for check in getattr(command, "checks", ())
+        )
+
     @classmethod
     def _allowed(
-        cls, command: app_commands.Command | app_commands.Group, user: discord.abc.User
+        cls,
+        command: app_commands.Command | app_commands.Group,
+        user: discord.abc.User,
+        *,
+        owner: bool = False,
     ) -> bool:
         """Whether ``user`` could plausibly run ``command``.
 
         Mirrors what Discord shows in the command picker, so the help page and
-        the picker cannot disagree.
+        the picker cannot disagree. Owner commands are shown to the owner only:
+        a server admin sees them in the picker, but they would be refused.
         """
+        if cls._owner_only(command) and not owner:
+            return False
         required = cls._required_permissions(command)
         if required is None:
             return True
@@ -186,7 +200,7 @@ class Help(commands.Cog):
         return user.guild_permissions.is_superset(required)
 
     def _lines_for(
-        self, cog: commands.Cog, user: discord.abc.User
+        self, cog: commands.Cog, user: discord.abc.User, *, owner: bool = False
     ) -> list[str]:
         """Render every command belonging to ``cog`` that ``user`` may use."""
         lines: list[str] = []
@@ -197,18 +211,20 @@ class Help(commands.Cog):
                 continue
             if isinstance(command, app_commands.Group):
                 continue  # the group itself carries no usage, its children do
-            if not self._allowed(command, user):
+            if not self._allowed(command, user, owner=owner):
                 continue
             lines.append(f"**/{command.qualified_name}** — {_describe(command)}")
         return lines
 
-    def build_pages(self, user: discord.abc.User) -> dict[str, HelpPage]:
+    def build_pages(
+        self, user: discord.abc.User, *, owner: bool = False
+    ) -> dict[str, HelpPage]:
         pages: dict[str, HelpPage] = {}
         for cog_name, (label, emoji, summary) in CATEGORIES.items():
             cog = self.bot.get_cog(cog_name)
             if cog is None:
                 continue  # extension not loaded — do not advertise it
-            lines = self._lines_for(cog, user)
+            lines = self._lines_for(cog, user, owner=owner)
             if not lines:
                 continue
             pages[cog_name] = HelpPage(
@@ -225,7 +241,10 @@ class Help(commands.Cog):
     # ------------------------------------------------------------------ #
     async def send_help_panel(self, interaction: discord.Interaction) -> None:
         """Also used by the "Команды бота" button on the rules panel."""
-        await send_panel(interaction, HelpPanel(self, interaction.user), ephemeral=True)
+        owner = await self.bot.is_owner(interaction.user)
+        await send_panel(
+            interaction, HelpPanel(self, interaction.user, owner=owner), ephemeral=True
+        )
 
     @app_commands.command(name="help", description="Показать интерактивный список команд")
     @guild_authorized()

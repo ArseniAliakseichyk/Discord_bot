@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 665-test pytest suite (650 offline + 15 end-to-end), ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 696-test pytest suite (681 offline + 15 end-to-end), ruff + mypy clean |
 
 ---
 
@@ -386,6 +386,12 @@ Dockerfile · docker-compose.yml
   All clients the plugin lists as playback-capable are registered, so one
   refusal is not the end of the attempt — an unregistered client is not a
   silent fallback, it simply does not exist.
+- **How the pinned snapshot plays at all.** From a home connection YouTube now
+  serves the audio-only formats SABR-only (no URL), so 1.18.2 finds nothing to
+  play. The `main` snapshot falls back to itag 18, a muxed 360p MP4, and plays
+  its AAC track - every video measured on 2026-10-02 played that way. The
+  sound is fine for Discord; the cost is bandwidth, roughly four to five times
+  an audio-only stream (about 15 MB per track), which a home server absorbs.
 - **Signing in is what makes it reliable.** The bot this replaced passed a
   `cookies.txt` to yt-dlp, i.e. it browsed as a logged-in user — which is why
   it played everything. `youtube-source` has no cookie file; its equivalent is
@@ -407,7 +413,7 @@ Dockerfile · docker-compose.yml
   snapshot build from `main` without editing any YAML.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest` — 499 offline
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 681 offline
   tests, no network or Discord token needed. Failed-track handling is tested in
   `tests/test_playback_recovery.py` against the real wavelink `Player`, `Queue`
   and AutoPlay, fed by a scripted Lavalink (`tests/lavalink_stand.py`) through
