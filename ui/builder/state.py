@@ -55,9 +55,7 @@ class BuilderState:
 
     def _check_index(self, index: int) -> None:
         if not 0 <= index < self.field_count:
-            raise BuilderError(
-                f"❌ Поля #{index + 1} больше нет — обновите список."
-            )
+            raise BuilderError(f"❌ Поля #{index + 1} больше нет — обновите список.")
 
     def ensure_room(self) -> None:
         if self.field_count >= MAX_FIELDS:
@@ -84,9 +82,7 @@ class BuilderState:
 
     def add_separator(self) -> None:
         self.ensure_room()
-        self.embed.add_field(
-            name=ZERO_WIDTH_SPACE, value=ZERO_WIDTH_SPACE, inline=False
-        )
+        self.embed.add_field(name=ZERO_WIDTH_SPACE, value=ZERO_WIDTH_SPACE, inline=False)
 
     def move_field(self, source: int, before: int) -> None:
         """Move the field at ``source`` so it sits immediately before ``before``.
@@ -114,8 +110,9 @@ class BuilderState:
         for index, item in enumerate(self.embed.fields, 1):
             name = (item.name or "").strip()
             labels.append(
-                f"Поле #{index}: {name[:80]}" if name.strip(ZERO_WIDTH_SPACE) else
-                f"Поле #{index}: — разделитель —"
+                f"Поле #{index}: {name[:80]}"
+                if name.strip(ZERO_WIDTH_SPACE)
+                else f"Поле #{index}: — разделитель —"
             )
         return labels
 

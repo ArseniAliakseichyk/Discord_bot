@@ -38,9 +38,7 @@ async def connect_nodes(
     for attempt in range(1, retries + 1):
         try:
             node = wavelink.Node(uri=uri, password=password)
-            await wavelink.Pool.connect(
-                nodes=[node], client=client, cache_capacity=cache_capacity
-            )
+            await wavelink.Pool.connect(nodes=[node], client=client, cache_capacity=cache_capacity)
             logger.info("Lavalink node registered: %s", uri)
             return
         except wavelink.AuthorizationFailedException:
@@ -49,13 +47,13 @@ async def connect_nodes(
             raise
         except (TimeoutError, wavelink.NodeException, OSError) as error:
             last_error = error
-            logger.warning(
-                "Lavalink connect attempt %d/%d failed: %s", attempt, retries, error
-            )
+            logger.warning("Lavalink connect attempt %d/%d failed: %s", attempt, retries, error)
             if attempt < retries:  # no point sleeping after the final attempt
                 await asyncio.sleep(delay)
 
     # retries >= 1, so the loop ran and either returned or recorded an error.
-    raise last_error if last_error is not None else RuntimeError(
-        f"Could not connect to Lavalink at {uri}"
+    raise (
+        last_error
+        if last_error is not None
+        else RuntimeError(f"Could not connect to Lavalink at {uri}")
     )

@@ -50,9 +50,7 @@ class MusicBot(commands.Bot):
             help_command=None,
             # Music embeds etc. must not ping @everyone/roles. Announcements
             # opt into mentions explicitly, on the specific send.
-            allowed_mentions=discord.AllowedMentions(
-                everyone=False, roles=False, users=True
-            ),
+            allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True),
         )
         self.settings = settings
         self.db = Database(settings.database_path)
@@ -69,9 +67,7 @@ class MusicBot(commands.Bot):
             self._log_task = attach_discord_handler(self, self.settings.log_channel_id)
 
         try:
-            await connect_nodes(
-                self, self.settings.lavalink_uri, self.settings.lavalink_password
-            )
+            await connect_nodes(self, self.settings.lavalink_uri, self.settings.lavalink_password)
         except Exception:
             # No node was registered, so wavelink has nothing to reconnect to:
             # playback stays unavailable until the process is restarted.

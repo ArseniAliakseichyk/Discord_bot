@@ -90,22 +90,14 @@ def check_target(
     if target.id == guild.owner_id:
         return f"❌ Нельзя применить {action} к владельцу сервера."
 
-    if bot_permission is not None and not getattr(
-        me.guild_permissions, bot_permission, False
-    ):
+    if bot_permission is not None and not getattr(me.guild_permissions, bot_permission, False):
         return f"❌ У бота нет права «{PERMISSION_NAMES.get(bot_permission, bot_permission)}»."
 
     # The guild owner outranks everyone, including their own top role position.
     if moderator.id != guild.owner_id and moderator.top_role <= target.top_role:
-        return (
-            f"❌ У {target.mention} роль не ниже вашей — "
-            f"применить {action} нельзя."
-        )
+        return f"❌ У {target.mention} роль не ниже вашей — применить {action} нельзя."
     if me.top_role <= target.top_role:
-        return (
-            f"❌ Роль {target.mention} выше роли бота. "
-            "Поднимите роль бота в настройках сервера."
-        )
+        return f"❌ Роль {target.mention} выше роли бота. Поднимите роль бота в настройках сервера."
     return None
 
 

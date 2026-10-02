@@ -63,8 +63,7 @@ class ColorRow(ui.ActionRow["GigaBuilderView"]):
         min_values=1,
         max_values=1,
         options=[
-            discord.SelectOption(label=name, value=name, emoji="🎨")
-            for name in PRESET_COLORS
+            discord.SelectOption(label=name, value=name, emoji="🎨") for name in PRESET_COLORS
         ],
     )
     async def color(self, interaction: discord.Interaction, select: ui.Select) -> None:
@@ -77,9 +76,7 @@ class ColorRow(ui.ActionRow["GigaBuilderView"]):
 class MediaRow(ui.ActionRow["GigaBuilderView"]):
     @ui.button(label="Изображение", emoji="🖼️", style=discord.ButtonStyle.secondary)
     async def image(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        await send_panel(
-            interaction, ImageActionView(builder_of(self), "image"), ephemeral=True
-        )
+        await send_panel(interaction, ImageActionView(builder_of(self), "image"), ephemeral=True)
 
     @ui.button(label="Миниатюра", emoji="📌", style=discord.ButtonStyle.secondary)
     async def thumbnail(self, interaction: discord.Interaction, _: ui.Button) -> None:
@@ -111,9 +108,7 @@ class FieldRow(ui.ActionRow["GigaBuilderView"]):
     async def reorder(self, interaction: discord.Interaction, _: ui.Button) -> None:
         builder = builder_of(self)
         if builder.state.field_count < 2:
-            await interaction.response.send_message(
-                "Нужно минимум 2 поля.", ephemeral=True
-            )
+            await interaction.response.send_message("Нужно минимум 2 поля.", ephemeral=True)
             return
         await send_panel(interaction, ReorderFieldsView(builder), ephemeral=True)
 
@@ -143,9 +138,7 @@ class PublishRow(ui.ActionRow["GigaBuilderView"]):
     @ui.button(label="Формат", emoji="🔀", style=discord.ButtonStyle.secondary)
     async def switch_format(self, interaction: discord.Interaction, _: ui.Button) -> None:
         builder = builder_of(self)
-        builder.state.publish_format = (
-            "v2" if builder.state.publish_format == "embed" else "embed"
-        )
+        builder.state.publish_format = "v2" if builder.state.publish_format == "embed" else "embed"
         await interaction.response.defer()
         await builder.update_preview()
 

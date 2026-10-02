@@ -45,8 +45,8 @@ class TestParsePosition:
             "   ",
             "abc",
             "-5",
-            "1:75",       # 75 seconds is a typo, not 1:15
-            "1:2:3:4",    # too many parts
+            "1:75",  # 75 seconds is a typo, not 1:15
+            "1:2:3:4",  # too many parts
             "1:",
             ":30",
             "1.30",

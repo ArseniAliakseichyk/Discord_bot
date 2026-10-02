@@ -39,9 +39,7 @@ class Owner(commands.Cog):
     ) -> None:
         gid = _parse_guild_id(guild_id, interaction)
         if gid is None:
-            await interaction.response.send_message(
-                "❌ Укажите ID сервера.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Укажите ID сервера.", ephemeral=True)
             return
         added = await self.bot.db.authorize_guild(gid, interaction.user.id)
         if added:
@@ -54,9 +52,7 @@ class Owner(commands.Cog):
                 f"ℹ️ Сервер `{gid}` уже был авторизован.", ephemeral=True
             )
 
-    @app_commands.command(
-        name="deauthorize", description="Снять авторизацию сервера (владелец)"
-    )
+    @app_commands.command(name="deauthorize", description="Снять авторизацию сервера (владелец)")
     @app_commands.describe(guild_id="ID сервера; по умолчанию — текущий")
     @is_owner()
     # Hidden from the command picker for everyone but server admins. Discord
@@ -68,9 +64,7 @@ class Owner(commands.Cog):
     ) -> None:
         gid = _parse_guild_id(guild_id, interaction)
         if gid is None:
-            await interaction.response.send_message(
-                "❌ Укажите ID сервера.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Укажите ID сервера.", ephemeral=True)
             return
         removed = await self.bot.db.deauthorize_guild(gid)
         if not removed:
@@ -92,9 +86,7 @@ class Owner(commands.Cog):
                 message += " Бот вышел из сервера."
         await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(
-        name="servers", description="Список серверов бота и их статус (владелец)"
-    )
+    @app_commands.command(name="servers", description="Список серверов бота и их статус (владелец)")
     @is_owner()
     # Hidden from the command picker for everyone but server admins. Discord
     # applies default permissions only inside servers, so the bot owner can

@@ -112,18 +112,17 @@ class Tickets(commands.Cog):
         channel = guild.get_channel(config.log_channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             return
-        if isinstance(channel, discord.TextChannel) and not channel.permissions_for(
-            guild.me
-        ).send_messages:
+        if (
+            isinstance(channel, discord.TextChannel)
+            and not channel.permissions_for(guild.me).send_messages
+        ):
             return
         try:
             await channel.send(view=notice(text))
         except discord.HTTPException:
             logger.warning("Could not write to the ticket log channel", exc_info=True)
 
-    async def _require_ticket(
-        self, interaction: discord.Interaction
-    ) -> Ticket | None:
+    async def _require_ticket(self, interaction: discord.Interaction) -> Ticket | None:
         """Return the ticket for the current channel, or answer and return None."""
         if interaction.channel_id is None:
             return None
@@ -146,10 +145,10 @@ class Tickets(commands.Cog):
             return
         role = guild.get_role(config.verify_role_id)
         if role is None:
-            logger.warning(
-                "Verify role %s is gone on guild %s", config.verify_role_id, guild.id
+            logger.warning("Verify role %s is gone on guild %s", config.verify_role_id, guild.id)
+            await self._reply(
+                interaction, "❌ Роль верификации не найдена — сообщите администрации."
             )
-            await self._reply(interaction, "❌ Роль верификации не найдена — сообщите администрации.")
             return
         if role in member.roles:
             await self._reply(interaction, "ℹ️ Вы уже прошли верификацию.")
@@ -174,9 +173,7 @@ class Tickets(commands.Cog):
             await self._reply(interaction, "⚠️ Не удалось выдать роль. Попробуйте позже.")
             return
 
-        logger.info(
-            "✅ Verified %s (%s) on %s", member.display_name, member.id, guild.name
-        )
+        logger.info("✅ Verified %s (%s) on %s", member.display_name, member.id, guild.name)
         await self._reply(
             interaction,
             "✅ Верификация пройдена!\n\n"
@@ -442,9 +439,7 @@ class Tickets(commands.Cog):
             return
         config = await self.bot.db.get_ticket_config(guild.id)
         if not is_support(member, config.support_role_id) and member.id != ticket.owner_id:
-            await self._reply(
-                interaction, "❌ Закрыть тикет может поддержка или его автор."
-            )
+            await self._reply(interaction, "❌ Закрыть тикет может поддержка или его автор.")
             return
         if not await self.bot.db.close_ticket(ticket.channel_id):
             await self._reply(interaction, "ℹ️ Тикет уже закрыт.")
@@ -465,9 +460,7 @@ class Tickets(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             if owner is not None:
                 try:
-                    await channel.set_permissions(
-                        owner, overwrite=None, reason="Тикет закрыт"
-                    )
+                    await channel.set_permissions(owner, overwrite=None, reason="Тикет закрыт")
                 except discord.HTTPException:
                     logger.warning("Could not revoke the author's access", exc_info=True)
             # The wanted name, not channel.name: a claim rename may still be
@@ -494,13 +487,9 @@ class Tickets(commands.Cog):
 
         if isinstance(channel, discord.abc.Messageable):
             await channel.send(
-                view=notice(
-                    f"🔒 Тикет закрыт пользователем {member.mention}.", accent=0xED4245
-                )
+                view=notice(f"🔒 Тикет закрыт пользователем {member.mention}.", accent=0xED4245)
             )
-        await self._log(
-            guild, f"🔒 Тикет **#{ticket.number:04d}** закрыт — {member.mention}"
-        )
+        await self._log(guild, f"🔒 Тикет **#{ticket.number:04d}** закрыт — {member.mention}")
 
     # ------------------------------------------------------------------ #
     #  Commands
@@ -547,9 +536,7 @@ class Tickets(commands.Cog):
     @group.command(name="add", description="Добавить участника в текущий тикет")
     @app_commands.describe(user="Кого пригласить в обсуждение")
     @guild_authorized()
-    async def add_member(
-        self, interaction: discord.Interaction, user: discord.Member
-    ) -> None:
+    async def add_member(self, interaction: discord.Interaction, user: discord.Member) -> None:
         guild = interaction.guild
         member = interaction.user
         channel = interaction.channel
@@ -575,9 +562,7 @@ class Tickets(commands.Cog):
         except discord.Forbidden:
             await self._reply(interaction, "❌ У бота нет прав менять доступ к каналу.")
             return
-        await self._reply(
-            interaction, f"✅ {user.mention} добавлен в тикет.", accent=0x57F287
-        )
+        await self._reply(interaction, f"✅ {user.mention} добавлен в тикет.", accent=0x57F287)
 
     # --- configuration --------------------------------------------------- #
     @config_group.command(name="show", description="Показать настройки тикетов")
@@ -657,9 +642,7 @@ class Tickets(commands.Cog):
                 "Поднимите роль бота в настройках сервера.",
             )
             return
-        await self.bot.db.update_ticket_config(
-            guild.id, verify_role_id=role.id if role else None
-        )
+        await self.bot.db.update_ticket_config(guild.id, verify_role_id=role.id if role else None)
         await self._reply(
             interaction,
             f"✅ Роль верификации: {role.mention if role else 'сброшена'}",
@@ -731,9 +714,7 @@ class RulesModal(discord.ui.Modal, title="Текст правил"):
         component = self.text.component
         assert isinstance(component, discord.ui.TextInput)
         value = component.value.strip()
-        await self.cog.bot.db.update_ticket_config(
-            interaction.guild.id, rules_text=value or None
-        )
+        await self.cog.bot.db.update_ticket_config(interaction.guild.id, rules_text=value or None)
         await self.cog._reply(
             interaction,
             "✅ Текст правил обновлён." if value else "✅ Возвращён текст по умолчанию.",

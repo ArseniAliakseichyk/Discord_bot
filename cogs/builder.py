@@ -20,9 +20,7 @@ class Builder(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
 
-    @app_commands.command(
-        name="constructor", description="Интерактивный конструктор анонсов"
-    )
+    @app_commands.command(name="constructor", description="Интерактивный конструктор анонсов")
     @app_commands.describe(
         channel="Канал для публикации",
         mention_role="Роль для упоминания при публикации",
@@ -38,8 +36,7 @@ class Builder(commands.Cog):
         guild = interaction.guild
         if guild is not None and not channel.permissions_for(guild.me).send_messages:
             await interaction.response.send_message(
-                f"❌ У бота нет прав писать в {channel.mention} — "
-                "выберите другой канал.",
+                f"❌ У бота нет прав писать в {channel.mention} — выберите другой канал.",
                 ephemeral=True,
             )
             return

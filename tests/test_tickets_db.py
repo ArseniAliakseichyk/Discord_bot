@@ -65,9 +65,7 @@ class TestTicketNumbering:
         assert (first.number, second.number) == (1, 2)
 
     async def test_each_guild_starts_from_one(self, db: Database) -> None:
-        await db.create_ticket(
-            guild_id=1, channel_id=100, owner_id=5, category=None, subject=None
-        )
+        await db.create_ticket(guild_id=1, channel_id=100, owner_id=5, category=None, subject=None)
         other = await db.create_ticket(
             guild_id=2, channel_id=200, owner_id=5, category=None, subject=None
         )
@@ -91,9 +89,7 @@ class TestTicketNumbering:
         assert sorted(numbers) == list(range(1, 21))
 
     async def test_numbers_do_not_regress_after_a_delete(self, db: Database) -> None:
-        await db.create_ticket(
-            guild_id=1, channel_id=100, owner_id=5, category=None, subject=None
-        )
+        await db.create_ticket(guild_id=1, channel_id=100, owner_id=5, category=None, subject=None)
         second = await db.create_ticket(
             guild_id=1, channel_id=101, owner_id=5, category=None, subject=None
         )
@@ -118,23 +114,17 @@ class TestTicketLifecycle:
         assert stored is not None and stored.status == "closed"
 
     async def test_double_claim_is_rejected(self, db: Database) -> None:
-        await db.create_ticket(
-            guild_id=1, channel_id=100, owner_id=5, category=None, subject=None
-        )
+        await db.create_ticket(guild_id=1, channel_id=100, owner_id=5, category=None, subject=None)
         assert await db.claim_ticket(100, 9) is True
         assert await db.claim_ticket(100, 8) is False
 
     async def test_closed_ticket_cannot_be_claimed(self, db: Database) -> None:
-        await db.create_ticket(
-            guild_id=1, channel_id=100, owner_id=5, category=None, subject=None
-        )
+        await db.create_ticket(guild_id=1, channel_id=100, owner_id=5, category=None, subject=None)
         await db.close_ticket(100)
         assert await db.claim_ticket(100, 9) is False
 
     async def test_double_close_is_rejected(self, db: Database) -> None:
-        await db.create_ticket(
-            guild_id=1, channel_id=100, owner_id=5, category=None, subject=None
-        )
+        await db.create_ticket(guild_id=1, channel_id=100, owner_id=5, category=None, subject=None)
         assert await db.close_ticket(100) is True
         assert await db.close_ticket(100) is False
 

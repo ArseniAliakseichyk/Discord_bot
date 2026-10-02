@@ -67,9 +67,7 @@ DEFAULT_RULES = """# 🦩 Добро пожаловать
 """
 
 
-def _support_role(
-    guild: discord.Guild, support_role_id: int | None
-) -> discord.Role | None:
+def _support_role(guild: discord.Guild, support_role_id: int | None) -> discord.Role | None:
     return guild.get_role(support_role_id) if support_role_id else None
 
 
@@ -176,9 +174,7 @@ class RulesActions(ui.ActionRow["RulesPanel"]):
         emoji="✅",
         custom_id=CID_VERIFY,
     )
-    async def verify(
-        self, interaction: discord.Interaction, _: ui.Button
-    ) -> None:
+    async def verify(self, interaction: discord.Interaction, _: ui.Button) -> None:
         view = self.view
         assert view is not None
         await view.cog.verify_member(interaction)
@@ -189,9 +185,7 @@ class RulesActions(ui.ActionRow["RulesPanel"]):
         emoji="📨",
         custom_id=CID_OPEN_TICKET,
     )
-    async def open_ticket(
-        self, interaction: discord.Interaction, _: ui.Button
-    ) -> None:
+    async def open_ticket(self, interaction: discord.Interaction, _: ui.Button) -> None:
         view = self.view
         assert view is not None
         await view.cog.prompt_ticket(interaction)
@@ -202,9 +196,7 @@ class RulesActions(ui.ActionRow["RulesPanel"]):
         emoji="📖",
         custom_id=CID_HELP,
     )
-    async def show_help(
-        self, interaction: discord.Interaction, _: ui.Button
-    ) -> None:
+    async def show_help(self, interaction: discord.Interaction, _: ui.Button) -> None:
         view = self.view
         assert view is not None
         await view.cog.show_help(interaction)

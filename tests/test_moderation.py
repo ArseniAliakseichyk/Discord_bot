@@ -51,9 +51,7 @@ class FakeMember:
         # `permissions or Permissions.all()` would be wrong: Permissions.none()
         # is falsy, so an explicitly empty permission set would be replaced by
         # a full one and the test would silently assert nothing.
-        self.guild_permissions = (
-            discord.Permissions.all() if permissions is None else permissions
-        )
+        self.guild_permissions = discord.Permissions.all() if permissions is None else permissions
         self.guild: FakeGuild = None  # type: ignore[assignment]
 
 
@@ -151,7 +149,7 @@ class TestParseDuration:
         assert parse_duration(text) is None
 
     def test_partial_junk_is_rejected_not_silently_truncated(self) -> None:
-        """"10xyz" must not quietly become 10 minutes."""
+        """ "10xyz" must not quietly become 10 minutes."""
         assert parse_duration("10xyz") is None
 
     def test_the_discord_cap_is_representable(self) -> None:

@@ -132,9 +132,7 @@ def can_announce() -> CheckDecorator:
         allowed = _bot(interaction).settings.announce_allowed_roles
         if allowed & {role.id for role in interaction.user.roles}:
             return True
-        raise MissingAnnouncePerms(
-            "Нет прав: нужна разрешённая роль или права администратора."
-        )
+        raise MissingAnnouncePerms("Нет прав: нужна разрешённая роль или права администратора.")
 
     return app_commands.check(predicate)
 

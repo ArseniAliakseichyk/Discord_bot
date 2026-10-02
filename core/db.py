@@ -102,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_lookup
     ON warnings (guild_id, user_id, active);
 """
 
+
 class _Unset(Enum):
     """Sentinel for "argument not supplied" that type checkers understand.
 
@@ -325,13 +326,9 @@ class Database:
             current,
             dj_role_id=current.dj_role_id if dj_role_id is _UNSET else dj_role_id,
             command_channel_id=(
-                current.command_channel_id
-                if command_channel_id is _UNSET
-                else command_channel_id
+                current.command_channel_id if command_channel_id is _UNSET else command_channel_id
             ),
-            default_volume=(
-                current.default_volume if default_volume is _UNSET else default_volume
-            ),
+            default_volume=(current.default_volume if default_volume is _UNSET else default_volume),
         )
         async with self._transaction() as conn:
             await conn.execute(
@@ -376,10 +373,7 @@ class Database:
                 await conn.executemany(
                     "INSERT INTO saved_queues (guild_id, position, uri, requester, avatar) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    [
-                        (guild_id, i, t.uri, t.requester, t.avatar)
-                        for i, t in enumerate(tracks)
-                    ],
+                    [(guild_id, i, t.uri, t.requester, t.avatar) for i, t in enumerate(tracks)],
                 )
 
     async def load_sessions(self) -> list[PlayerSession]:
@@ -398,8 +392,7 @@ class Database:
 
     async def load_queue(self, guild_id: int) -> list[SavedTrack]:
         async with self.conn.execute(
-            "SELECT uri, requester, avatar FROM saved_queues "
-            "WHERE guild_id = ? ORDER BY position",
+            "SELECT uri, requester, avatar FROM saved_queues WHERE guild_id = ? ORDER BY position",
             (guild_id,),
         ) as cur:
             rows = await cur.fetchall()
@@ -410,9 +403,7 @@ class Database:
 
     async def clear_session(self, guild_id: int) -> None:
         async with self._transaction() as conn:
-            await conn.execute(
-                "DELETE FROM player_sessions WHERE guild_id = ?", (guild_id,)
-            )
+            await conn.execute("DELETE FROM player_sessions WHERE guild_id = ?", (guild_id,))
             await conn.execute("DELETE FROM saved_queues WHERE guild_id = ?", (guild_id,))
 
     # ------------------------------------------------------------------ #
@@ -480,18 +471,12 @@ class Database:
         current = await self.get_ticket_config(guild_id)
         updated = replace(
             current,
-            category_id=(
-                current.category_id if category_id is _UNSET else category_id
-            ),
+            category_id=(current.category_id if category_id is _UNSET else category_id),
             support_role_id=(
                 current.support_role_id if support_role_id is _UNSET else support_role_id
             ),
-            verify_role_id=(
-                current.verify_role_id if verify_role_id is _UNSET else verify_role_id
-            ),
-            log_channel_id=(
-                current.log_channel_id if log_channel_id is _UNSET else log_channel_id
-            ),
+            verify_role_id=(current.verify_role_id if verify_role_id is _UNSET else verify_role_id),
+            log_channel_id=(current.log_channel_id if log_channel_id is _UNSET else log_channel_id),
             rules_text=current.rules_text if rules_text is _UNSET else rules_text,
         )
         async with self._transaction() as conn:
@@ -539,8 +524,7 @@ class Database:
         now = int(time.time())
         async with self._transaction() as conn:
             async with conn.execute(
-                "SELECT COALESCE(MAX(number), 0) + 1 AS next FROM tickets "
-                "WHERE guild_id = ?",
+                "SELECT COALESCE(MAX(number), 0) + 1 AS next FROM tickets WHERE guild_id = ?",
                 (guild_id,),
             ) as cur:
                 row = await cur.fetchone()
@@ -708,8 +692,7 @@ class Database:
         """Scoped by guild so one server cannot clear another server's warning."""
         async with self._transaction() as conn:
             cur = await conn.execute(
-                "UPDATE warnings SET active = 0 "
-                "WHERE id = ? AND guild_id = ? AND active = 1",
+                "UPDATE warnings SET active = 0 WHERE id = ? AND guild_id = ? AND active = 1",
                 (warning_id, guild_id),
             )
         return cur.rowcount > 0
@@ -717,8 +700,7 @@ class Database:
     async def clear_warnings(self, guild_id: int, user_id: int) -> int:
         async with self._transaction() as conn:
             cur = await conn.execute(
-                "UPDATE warnings SET active = 0 "
-                "WHERE guild_id = ? AND user_id = ? AND active = 1",
+                "UPDATE warnings SET active = 0 WHERE guild_id = ? AND user_id = ? AND active = 1",
                 (guild_id, user_id),
             )
         return cur.rowcount

@@ -52,9 +52,7 @@ class TestLocalFile:
     def test_a_search_phrase_is_not_mistaken_for_a_path(self, music_cog: Music) -> None:
         assert music_cog._local_file("rick astley never gonna give you up") is None
 
-    def test_container_path_uses_the_resolved_relative_name(
-        self, music_cog: Music
-    ) -> None:
+    def test_container_path_uses_the_resolved_relative_name(self, music_cog: Music) -> None:
         # The raw query is never interpolated: "sub/./deep.mp3" normalises first.
         assert music_cog._local_file("sub/./deep.mp3") == "/music/sub/deep.mp3"
 

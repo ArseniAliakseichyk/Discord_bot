@@ -221,11 +221,7 @@ class AnnounceModal(ui.Modal, title="Создание нового анонса"
         # Re-apply the invoker's own permissions: being allowed to run /announce
         # must not grant the ability to ping roles they could not ping themselves.
         allowed = mentions_for_role(interaction.user, self.target_channel, self.role)
-        mention = (
-            self.role.mention
-            if self.role and (allowed.everyone or allowed.roles)
-            else None
-        )
+        mention = self.role.mention if self.role and (allowed.everyone or allowed.roles) else None
         view = AnnouncePreviewView(container, self.target_channel, mention, allowed)
         await send_panel(interaction, view, ephemeral=True)
 
@@ -234,9 +230,7 @@ class Admin(commands.Cog):
     def __init__(self, bot: MusicBot) -> None:
         self.bot = bot
 
-    @app_commands.command(
-        name="announce", description="Создать объявление с предпросмотром"
-    )
+    @app_commands.command(name="announce", description="Создать объявление с предпросмотром")
     @app_commands.describe(
         channel="Канал для отправки (по умолчанию — официальный)",
         mention_role="Роль для упоминания",
@@ -256,9 +250,7 @@ class Admin(commands.Cog):
         if interaction.guild is None:  # can_announce() already rejects DMs
             return
         default_id = self.bot.settings.announce_default_channel
-        target = channel or (
-            interaction.guild.get_channel(default_id) if default_id else None
-        )
+        target = channel or (interaction.guild.get_channel(default_id) if default_id else None)
         if not isinstance(target, discord.TextChannel):
             await interaction.response.send_message(
                 "❌ Канал для анонса не настроен.", ephemeral=True

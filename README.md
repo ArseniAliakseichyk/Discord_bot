@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 696-test pytest suite (681 offline + 15 end-to-end), ruff + mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 696-test pytest suite (681 offline + 15 end-to-end), ruff lint + format and mypy clean |
 
 ---
 

@@ -89,16 +89,12 @@ class Settings(BaseSettings):
     # bot only needs to know whether the source is configured so it can say so
     # instead of letting a Spotify link fail with a bare "nothing found".
     spotify_client_id: SecretStr | None = Field(default=None, alias="SPOTIFY_CLIENT_ID")
-    spotify_client_secret: SecretStr | None = Field(
-        default=None, alias="SPOTIFY_CLIENT_SECRET"
-    )
+    spotify_client_secret: SecretStr | None = Field(default=None, alias="SPOTIFY_CLIENT_SECRET")
 
     # --- Storage ---
     database_path: str = Field(default="./data/bot.db", alias="DATABASE_PATH")
 
-    @field_validator(
-        "owner_ids", "excluded_user_ids", "announce_allowed_roles", mode="before"
-    )
+    @field_validator("owner_ids", "excluded_user_ids", "announce_allowed_roles", mode="before")
     @classmethod
     def _ids(cls, v: object) -> set[int]:
         return _parse_id_set(v)

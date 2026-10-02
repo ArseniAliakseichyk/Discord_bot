@@ -75,9 +75,7 @@ class FieldModal(ui.Modal, title="Настройка поля"):
         inline = _is_yes(self.is_inline_input.value)
         try:
             if self.index is None:
-                self.view.state.add_field(
-                    self.name.value, self.value.value, inline=inline
-                )
+                self.view.state.add_field(self.name.value, self.value.value, inline=inline)
             else:
                 self.view.state.set_field(
                     self.index, self.name.value, self.value.value, inline=inline
@@ -129,9 +127,7 @@ class MainSettingsModal(ui.Modal, title="Основные настройки"):
             # description before parsing the colour, so a typo left the embed
             # partly changed while the preview still showed the old values.
             if color is None:
-                await _fail(
-                    interaction, "❌ Неверный HEX-цвет! Формат `#RRGGBB` или `#RGB`."
-                )
+                await _fail(interaction, "❌ Неверный HEX-цвет! Формат `#RRGGBB` или `#RGB`.")
                 return
 
         url = self.title_url_input.value.strip()
@@ -176,13 +172,9 @@ class ContentModal(ui.Modal, title="Текст сообщения"):
 
 
 class AuthorModal(ui.Modal, title="Настройка автора"):
-    name: ui.TextInput = ui.TextInput(
-        label="Имя автора", required=False, max_length=MAX_TITLE
-    )
+    name: ui.TextInput = ui.TextInput(label="Имя автора", required=False, max_length=MAX_TITLE)
     url: ui.TextInput = ui.TextInput(label="URL автора (необязательно)", required=False)
-    icon_url: ui.TextInput = ui.TextInput(
-        label="URL иконки автора (необязательно)", required=False
-    )
+    icon_url: ui.TextInput = ui.TextInput(label="URL иконки автора (необязательно)", required=False)
 
     def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
@@ -211,12 +203,8 @@ class AuthorModal(ui.Modal, title="Настройка автора"):
 
 
 class FooterModal(ui.Modal, title="Настройка футера"):
-    text: ui.TextInput = ui.TextInput(
-        label="Текст футера", required=False, max_length=MAX_FOOTER
-    )
-    icon_url: ui.TextInput = ui.TextInput(
-        label="URL иконки футера (необязательно)", required=False
-    )
+    text: ui.TextInput = ui.TextInput(label="Текст футера", required=False, max_length=MAX_FOOTER)
+    icon_url: ui.TextInput = ui.TextInput(label="URL иконки футера (необязательно)", required=False)
 
     def __init__(self, view: GigaBuilderView) -> None:
         super().__init__()
@@ -251,9 +239,7 @@ class ImageModal(ui.Modal, title="Изображение по URL"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         value = self.url.value.strip()
         if value and not is_http_url(value):
-            await _fail(
-                interaction, "❌ Это не похоже на корректный URL (http/https)."
-            )
+            await _fail(interaction, "❌ Это не похоже на корректный URL (http/https).")
             return
         self.view.state.set_media(self.kind, value or None)
         await interaction.response.defer()

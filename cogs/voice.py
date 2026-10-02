@@ -40,14 +40,10 @@ class Voice(commands.Cog):
             or interaction.user.voice is None
             or interaction.user.voice.channel is None
         ):
-            await interaction.response.send_message(
-                MSG_JOIN_VOICE_FIRST, ephemeral=True
-            )
+            await interaction.response.send_message(MSG_JOIN_VOICE_FIRST, ephemeral=True)
             return
         if player_of(interaction.guild) is not None:
-            await interaction.response.send_message(
-                "ℹ️ Бот уже в голосовом канале.", ephemeral=True
-            )
+            await interaction.response.send_message("ℹ️ Бот уже в голосовом канале.", ephemeral=True)
             return
         channel = interaction.user.voice.channel
         await connect_and_configure(channel, self.bot)
@@ -122,19 +118,13 @@ class Voice(commands.Cog):
     async def leave(self, interaction: discord.Interaction) -> None:
         player = player_of(interaction.guild)
         if player is None or interaction.guild is None:
-            await interaction.response.send_message(
-                MSG_BOT_NOT_CONNECTED, ephemeral=True
-            )
+            await interaction.response.send_message(MSG_BOT_NOT_CONNECTED, ephemeral=True)
             return
         guild_id = interaction.guild.id
-        await self._retire_panel(
-            guild_id, f"👋 Бот отключён — {interaction.user.display_name}"
-        )
+        await self._retire_panel(guild_id, f"👋 Бот отключён — {interaction.user.display_name}")
         await player.disconnect()
         await self.bot.db.clear_session(guild_id)
-        await interaction.response.send_message(
-            "👋 Отключился и очистил очередь.", ephemeral=True
-        )
+        await interaction.response.send_message("👋 Отключился и очистил очередь.", ephemeral=True)
 
 
 async def setup(bot: MusicBot) -> None:

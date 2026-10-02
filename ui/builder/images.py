@@ -88,13 +88,9 @@ class ImageActionView(PanelView):
 
         upload: discord.Message | None = None
         try:
-            upload = await self.builder.bot.wait_for(
-                "message", timeout=UPLOAD_WAIT, check=check
-            )
+            upload = await self.builder.bot.wait_for("message", timeout=UPLOAD_WAIT, check=check)
             attachment = upload.attachments[0]
-            if not attachment.content_type or not attachment.content_type.startswith(
-                "image/"
-            ):
+            if not attachment.content_type or not attachment.content_type.startswith("image/"):
                 await self._say(interaction, "❌ Прикреплённый файл не является изображением.")
                 return
 

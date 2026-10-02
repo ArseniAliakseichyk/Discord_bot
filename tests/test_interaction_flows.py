@@ -91,9 +91,19 @@ EXPECTED_COMPONENTS = {
     "RulesPanel": ["Команды бота", "Связаться с администрацией", "Согласен с правилами"],
     "TicketControls": ["Взять в работу", "Закрыть тикет"],
     "GigaBuilderView": [
-        "Автор", "Добавить поле", "Изменить/Удалить", "Изображение",
-        "Миниатюра", "Опубликовать", "Основное", "Отменить", "Порядок полей",
-        "Разделитель", "Текст над постом", "Формат: эмбед", "Футер",
+        "Автор",
+        "Добавить поле",
+        "Изменить/Удалить",
+        "Изображение",
+        "Миниатюра",
+        "Опубликовать",
+        "Основное",
+        "Отменить",
+        "Порядок полей",
+        "Разделитель",
+        "Текст над постом",
+        "Формат: эмбед",
+        "Футер",
         "<select>",
     ],
     "FieldPickerView": ["<select>"],
@@ -304,9 +314,7 @@ class TestPlaybackBehaviour:
 class TestTicketFlow:
     async def _configured(self, bot, guild, *, support_role):
         guild.get_role = lambda _id: support_role
-        await bot.db.update_ticket_config(
-            guild.id, category_id=1, support_role_id=support_role.id
-        )
+        await bot.db.update_ticket_config(guild.id, category_id=1, support_role_id=support_role.id)
 
     async def test_claim_then_close_moves_through_the_states(self, bot) -> None:
         from ui.tickets import TicketControls
@@ -315,8 +323,11 @@ class TestTicketFlow:
         support = make_role(300, position=5, name="Support")
         await self._configured(bot, guild, support_role=support)
         ticket = await bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=member.id,
-            category="bug", subject="s",
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=member.id,
+            category="bug",
+            subject="s",
         )
 
         view = TicketControls(bot.get_cog("Tickets"), number=ticket.number, owner=member)
@@ -340,8 +351,11 @@ class TestTicketFlow:
         support = make_role(300, position=5, name="Support")
         await self._configured(bot, guild, support_role=support)
         await bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=member.id,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=member.id,
+            category=None,
+            subject=None,
         )
         view = TicketControls(bot.get_cog("Tickets"), number=1, owner=member)
         item, interaction = press(view, "Взять в работу", guild, channel, member)
@@ -356,8 +370,11 @@ class TestTicketFlow:
         support = make_role(300, position=5, name="Support")
         await self._configured(bot, guild, support_role=support)
         await bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         second = make_member(7, guild=guild, top_role_position=10)
 
@@ -381,8 +398,11 @@ class TestTicketFlow:
         support = make_role(300, position=5, name="Support")
         await self._configured(bot, guild, support_role=support)
         await bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         view = TicketControls(bot.get_cog("Tickets"), number=1, owner=member)
         item, interaction = press(view, "Закрыть тикет", guild, channel, member)
@@ -435,14 +455,18 @@ class TestBuilderFlow:
         reorder = ReorderFieldsView(view)
         selects = [i for i in interactive_items(reorder) if isinstance(i, ui.Select)]
         await drive(
-            reorder, selects[0],
-            FakeInteraction(user=member, guild=guild, channel=channel,
-                            message=Message(), values=["0"]),
+            reorder,
+            selects[0],
+            FakeInteraction(
+                user=member, guild=guild, channel=channel, message=Message(), values=["0"]
+            ),
         )
         await drive(
-            reorder, selects[1],
-            FakeInteraction(user=member, guild=guild, channel=channel,
-                            message=Message(), values=["2"]),
+            reorder,
+            selects[1],
+            FakeInteraction(
+                user=member, guild=guild, channel=channel, message=Message(), values=["2"]
+            ),
         )
         assert [f.name for f in view.state.embed.fields] == ["B", "A", "C"]
 
@@ -602,11 +626,7 @@ class TestPlayPauseToggle:
 
     async def test_there_is_exactly_one_of_them(self, bot) -> None:
         view, *_ = self._panel(bot, paused=False)
-        toggles = [
-            i
-            for i in interactive_items(view)
-            if str(getattr(i, "emoji", "")) in {"⏸️", "▶️"}
-        ]
+        toggles = [i for i in interactive_items(view) if str(getattr(i, "emoji", "")) in {"⏸️", "▶️"}]
         assert len(toggles) == 1
 
     async def test_answers_when_nothing_is_playing(self, bot) -> None:

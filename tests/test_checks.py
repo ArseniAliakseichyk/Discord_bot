@@ -53,9 +53,7 @@ def make_member(*, admin=False, manage=False, role_ids=()):
 def make_bot(dj_role_id):
     return SimpleNamespace(
         db=SimpleNamespace(
-            get_settings=AsyncMock(
-                return_value=GuildSettings(guild_id=1, dj_role_id=dj_role_id)
-            )
+            get_settings=AsyncMock(return_value=GuildSettings(guild_id=1, dj_role_id=dj_role_id))
         )
     )
 

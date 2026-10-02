@@ -73,9 +73,7 @@ class GigaBuilderView(PanelView):
         state = self.state
 
         note = (
-            "классический эмбед"
-            if state.publish_format == "embed"
-            else "контейнер Components V2"
+            "классический эмбед" if state.publish_format == "embed" else "контейнер Components V2"
         )
         overview = [f"Канал: {self.target_channel.mention} · формат: **{note}**"]
         if self.role_to_mention:
@@ -83,14 +81,10 @@ class GigaBuilderView(PanelView):
         overview.append(
             f"-# Символов: {state.total_length()} / 6000 · полей: {state.field_count} / 25"
         )
-        self.add_item(
-            make_panel(title="🚀 Конструктор анонсов", body="\n".join(overview))
-        )
+        self.add_item(make_panel(title="🚀 Конструктор анонсов", body="\n".join(overview)))
 
         if state.message_content:
-            self.add_item(
-                ui.TextDisplay(f"**Текст над постом:**\n{state.message_content}")
-            )
+            self.add_item(ui.TextDisplay(f"**Текст над постом:**\n{state.message_content}"))
 
         self.add_item(embed_to_container(state.embed))
 

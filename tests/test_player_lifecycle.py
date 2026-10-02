@@ -97,9 +97,7 @@ class TestTrackChanges:
         assert [m.deleted for m in home.sent] == [True, True, False]
         assert music.now_messages[guild.id] is home.sent[-1]
 
-    async def test_a_manually_deleted_panel_does_not_break_the_next_track(
-        self, bot
-    ) -> None:
+    async def test_a_manually_deleted_panel_does_not_break_the_next_track(self, bot) -> None:
         """Someone deletes the message; the next transition must still work."""
         music, guild, player, home = setup_guild(bot)
         await music.on_wavelink_track_start(start_payload(player, make_track("a")))
@@ -415,14 +413,12 @@ class TestPlaybackFailures:
     a Java stack trace in the container log.
     """
 
-
     def _stuck(self, player, track, threshold=10_000):
         payload = MagicMock(spec=wavelink.TrackStuckEventPayload)
         payload.player = player
         payload.track = track
         payload.threshold = threshold
         return payload
-
 
     async def test_stuck_skips_the_track(self, bot) -> None:
         music, guild, player, home = setup_guild(bot)
@@ -528,7 +524,6 @@ class TestNoDuplicateEndNotice:
         payload.reason = reason
         return payload
 
-
     @pytest.mark.parametrize("reason", ["replaced", "cleanup", "loadFailed"])
     async def test_non_endings_do_not_announce_the_queue(self, bot, reason) -> None:
         music, guild, player, home = setup_guild(bot)
@@ -551,5 +546,3 @@ class TestNoDuplicateEndNotice:
         assert "Очередь закончилась" in (idle_text(home.sent[0]) or ""), (
             f"reason={reason} should close the queue out"
         )
-
-

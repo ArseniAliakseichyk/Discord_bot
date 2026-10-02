@@ -53,9 +53,7 @@ class HelpSelect(ui.ActionRow["HelpPanel"]):
         max_values=1,
         options=[discord.SelectOption(label="Главная", value=MAIN_PAGE)],
     )
-    async def choose(
-        self, interaction: discord.Interaction, select: ui.Select
-    ) -> None:
+    async def choose(self, interaction: discord.Interaction, select: ui.Select) -> None:
         view = self.view
         assert view is not None
         await view.show(interaction, select.values[0])
@@ -204,9 +202,7 @@ class Help(commands.Cog):
     ) -> list[str]:
         """Render every command belonging to ``cog`` that ``user`` may use."""
         lines: list[str] = []
-        for command in sorted(
-            self.bot.tree.walk_commands(), key=lambda c: c.qualified_name
-        ):
+        for command in sorted(self.bot.tree.walk_commands(), key=lambda c: c.qualified_name):
             if getattr(command, "binding", None) is not cog:
                 continue
             if isinstance(command, app_commands.Group):
@@ -216,9 +212,7 @@ class Help(commands.Cog):
             lines.append(f"**/{command.qualified_name}** — {_describe(command)}")
         return lines
 
-    def build_pages(
-        self, user: discord.abc.User, *, owner: bool = False
-    ) -> dict[str, HelpPage]:
+    def build_pages(self, user: discord.abc.User, *, owner: bool = False) -> dict[str, HelpPage]:
         pages: dict[str, HelpPage] = {}
         for cog_name, (label, emoji, summary) in CATEGORIES.items():
             cog = self.bot.get_cog(cog_name)

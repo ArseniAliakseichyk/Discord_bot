@@ -40,9 +40,7 @@ def mentions_for_role(
         allowed_roles = [role]
     else:
         allowed_roles = False
-    return discord.AllowedMentions(
-        everyone=privileged, roles=allowed_roles, users=True
-    )
+    return discord.AllowedMentions(everyone=privileged, roles=allowed_roles, users=True)
 
 
 def mentions_for_free_text(

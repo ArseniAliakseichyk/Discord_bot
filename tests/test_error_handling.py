@@ -55,9 +55,7 @@ class TestExpiredInteraction:
         wrapped = app_commands.CommandInvokeError(MagicMock(), RuntimeError("boom"))
         assert _is_expired_interaction(wrapped) is False
 
-    async def test_logs_a_warning_and_does_not_try_to_reply(
-        self, bot, caplog
-    ) -> None:
+    async def test_logs_a_warning_and_does_not_try_to_reply(self, bot, caplog) -> None:
         """Replying would fail the same way; the token is already gone."""
         ix = interaction("search")
         error = app_commands.CommandInvokeError(MagicMock(), http_error(10062))
@@ -80,9 +78,7 @@ class TestExpiredInteraction:
 
 
 class TestOtherErrors:
-    async def test_a_real_failure_still_logs_a_traceback_and_replies(
-        self, bot, caplog
-    ) -> None:
+    async def test_a_real_failure_still_logs_a_traceback_and_replies(self, bot, caplog) -> None:
         ix = interaction()
         error = app_commands.CommandInvokeError(MagicMock(), RuntimeError("boom"))
         with caplog.at_level(logging.ERROR, logger="bot"):
@@ -92,9 +88,7 @@ class TestOtherErrors:
 
     async def test_cooldown_tells_the_user_how_long(self, bot) -> None:
         ix = interaction()
-        await bot.on_app_command_error(
-            ix, app_commands.CommandOnCooldown(MagicMock(), 4.2)
-        )
+        await bot.on_app_command_error(ix, app_commands.CommandOnCooldown(MagicMock(), 4.2))
         assert ix.record.acks == ["send_message"]
 
     async def test_check_failures_answer_without_a_traceback(self, bot, caplog) -> None:

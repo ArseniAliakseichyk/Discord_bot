@@ -135,20 +135,14 @@ class Events(commands.Cog):
         if await self.bot.db.is_authorized(guild.id):
             logger.info("➕ Joined authorized guild %s (%s)", guild.name, guild.id)
         else:
-            logger.warning(
-                "⛔ Joined unauthorized guild %s (%s) — leaving", guild.name, guild.id
-            )
+            logger.warning("⛔ Joined unauthorized guild %s (%s) — leaving", guild.name, guild.id)
             await self._notify_and_leave(guild)
 
     async def _notify_and_leave(self, guild: discord.Guild) -> None:
         channel = guild.system_channel
         if channel is None or not channel.permissions_for(guild.me).send_messages:
             channel = next(
-                (
-                    c
-                    for c in guild.text_channels
-                    if c.permissions_for(guild.me).send_messages
-                ),
+                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
                 None,
             )
         if channel is not None:
@@ -172,9 +166,7 @@ class Events(commands.Cog):
     #  Lavalink
     # ------------------------------------------------------------------ #
     @commands.Cog.listener()
-    async def on_wavelink_node_ready(
-        self, payload: wavelink.NodeReadyEventPayload
-    ) -> None:
+    async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload) -> None:
         # cogs.music also listens for this event, to restore saved sessions.
         logger.info(
             "🟢 Lavalink node ready: %s (resumed=%s)",
@@ -192,18 +184,14 @@ class Events(commands.Cog):
         where = f"#{message.channel} @ {message.guild}"
         # Message bodies are personal data and go to DEBUG only; INFO keeps the
         # metadata so bot.log stays useful without transcribing every chat.
-        logger.info("📩 %s in %s (%d chars)", format_user(message.author), where, len(message.content))
+        logger.info(
+            "📩 %s in %s (%d chars)", format_user(message.author), where, len(message.content)
+        )
         logger.debug("📩 %s in %s: %s", format_user(message.author), where, message.content)
 
     @commands.Cog.listener()
-    async def on_message_edit(
-        self, before: discord.Message, after: discord.Message
-    ) -> None:
-        if (
-            before.author.bot
-            or self.is_excluded(before.author)
-            or before.content == after.content
-        ):
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if before.author.bot or self.is_excluded(before.author) or before.content == after.content:
             return
         logger.info("✏️ %s edited a message in #%s", format_user(before.author), before.channel)
         logger.debug(
@@ -218,9 +206,7 @@ class Events(commands.Cog):
     async def on_message_delete(self, message: discord.Message) -> None:
         if message.author.bot or self.is_excluded(message.author):
             return
-        logger.info(
-            "🗑️ Deleted message by %s in #%s", format_user(message.author), message.channel
-        )
+        logger.info("🗑️ Deleted message by %s in #%s", format_user(message.author), message.channel)
         logger.debug(
             "🗑️ Deleted message by %s in #%s: %s",
             format_user(message.author),
@@ -239,9 +225,7 @@ class Events(commands.Cog):
             logger.info("🚪 %s left %s", format_user(member), member.guild.name)
 
     @commands.Cog.listener()
-    async def on_reaction_add(
-        self, reaction: discord.Reaction, user: discord.abc.User
-    ) -> None:
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.abc.User) -> None:
         if user.bot or self.is_excluded(user):
             return
         logger.info(
@@ -252,9 +236,7 @@ class Events(commands.Cog):
         )
 
     @commands.Cog.listener()
-    async def on_reaction_remove(
-        self, reaction: discord.Reaction, user: discord.abc.User
-    ) -> None:
+    async def on_reaction_remove(self, reaction: discord.Reaction, user: discord.abc.User) -> None:
         if user.bot or self.is_excluded(user):
             return
         logger.info(

@@ -86,9 +86,7 @@ class Moderation(commands.Cog):
         moderator = interaction.user
         if interaction.guild is None or not isinstance(moderator, discord.Member):
             return None
-        problem = check_target(
-            moderator, target, bot_permission=bot_permission, action=action
-        )
+        problem = check_target(moderator, target, bot_permission=bot_permission, action=action)
         if problem is not None:
             await self._reply(interaction, problem, accent=COLOR_BAD)
             return None
@@ -155,9 +153,7 @@ class Moderation(commands.Cog):
         )
         if moderator is None or interaction.guild is None:
             return
-        warning = await self.bot.db.add_warning(
-            interaction.guild.id, user.id, moderator.id, reason
-        )
+        warning = await self.bot.db.add_warning(interaction.guild.id, user.id, moderator.id, reason)
         active = await self.bot.db.list_warnings(interaction.guild.id, user.id)
         delivered = await self._dm(
             user,
@@ -241,8 +237,7 @@ class Moderation(commands.Cog):
         else:
             await self._reply(
                 interaction,
-                f"❌ Предупреждение #{warning_id} не найдено на этом сервере "
-                "или уже снято.",
+                f"❌ Предупреждение #{warning_id} не найдено на этом сервере или уже снято.",
                 accent=COLOR_BAD,
             )
 
@@ -250,20 +245,15 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="Кому обнулить предупреждения")
     @guild_authorized()
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def clearwarns(
-        self, interaction: discord.Interaction, user: discord.Member
-    ) -> None:
+    async def clearwarns(self, interaction: discord.Interaction, user: discord.Member) -> None:
         if interaction.guild is None:
             return
         count = await self.bot.db.clear_warnings(interaction.guild.id, user.id)
-        await self._reply(
-            interaction, f"✅ Снято предупреждений у {user.mention}: **{count}**."
-        )
+        await self._reply(interaction, f"✅ Снято предупреждений у {user.mention}: **{count}**.")
         if count:
             await self._log(
                 interaction.guild,
-                f"♻️ Все предупреждения {user.mention} сняты ({count}) — "
-                f"{interaction.user.mention}",
+                f"♻️ Все предупреждения {user.mention} сняты ({count}) — {interaction.user.mention}",
                 accent=COLOR_OK,
             )
 
@@ -297,9 +287,7 @@ class Moderation(commands.Cog):
             )
             return
         if delta > MAX_TIMEOUT:
-            await self._reply(
-                interaction, "❌ Максимальный тайм-аут — 28 дней.", accent=COLOR_BAD
-            )
+            await self._reply(interaction, "❌ Максимальный тайм-аут — 28 дней.", accent=COLOR_BAD)
             return
 
         try:
@@ -333,9 +321,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="С кого снять тайм-аут")
     @guild_authorized()
     @app_commands.checks.has_permissions(moderate_members=True)
-    async def unmute(
-        self, interaction: discord.Interaction, user: discord.Member
-    ) -> None:
+    async def unmute(self, interaction: discord.Interaction, user: discord.Member) -> None:
         moderator = await self._guard(
             interaction, user, bot_permission="moderate_members", action="снятие тайм-аута"
         )
@@ -389,9 +375,7 @@ class Moderation(commands.Cog):
                 await self._reply(interaction, "❌ Discord отклонил кик.", accent=COLOR_BAD)
             else:
                 logger.exception("Kick failed")
-                await self._reply(
-                    interaction, "⚠️ Не удалось выгнать участника.", accent=COLOR_BAD
-                )
+                await self._reply(interaction, "⚠️ Не удалось выгнать участника.", accent=COLOR_BAD)
             return
         await self._reply(interaction, f"👢 {user.mention} выгнан.")
         await self._log(
@@ -427,7 +411,9 @@ class Moderation(commands.Cog):
                 interaction, user, bot_permission="ban_members", action="бан"
             )
         elif user.id in (interaction.user.id, guild.me.id, guild.owner_id):
-            await self._reply(interaction, "❌ Этого пользователя забанить нельзя.", accent=COLOR_BAD)
+            await self._reply(
+                interaction, "❌ Этого пользователя забанить нельзя.", accent=COLOR_BAD
+            )
             return
         elif not guild.me.guild_permissions.ban_members:
             await self._reply(
@@ -440,8 +426,7 @@ class Moderation(commands.Cog):
         # DM could not be opened; only members are told.
         notified = isinstance(user, discord.Member) and await self._dm(
             user,
-            f"🔨 Вы забанены на сервере **{guild.name}**.\n"
-            f"**Причина:** {reason or 'не указана'}",
+            f"🔨 Вы забанены на сервере **{guild.name}**.\n**Причина:** {reason or 'не указана'}",
         )
         try:
             await guild.ban(
@@ -481,10 +466,14 @@ class Moderation(commands.Cog):
         if guild is None or not isinstance(interaction.user, discord.Member):
             return
         if not user_id.isdigit():
-            await self._reply(interaction, "❌ ID должен состоять только из цифр.", accent=COLOR_BAD)
+            await self._reply(
+                interaction, "❌ ID должен состоять только из цифр.", accent=COLOR_BAD
+            )
             return
         if not guild.me.guild_permissions.ban_members:
-            await self._reply(interaction, "❌ У бота нет права «Банить участников».", accent=COLOR_BAD)
+            await self._reply(
+                interaction, "❌ У бота нет права «Банить участников».", accent=COLOR_BAD
+            )
             return
         try:
             await guild.unban(
@@ -626,9 +615,7 @@ class Moderation(commands.Cog):
     ) -> None:
         if interaction.guild is None:
             return
-        await self.bot.db.set_mod_log_channel(
-            interaction.guild.id, channel.id if channel else None
-        )
+        await self.bot.db.set_mod_log_channel(interaction.guild.id, channel.id if channel else None)
         await self._reply(
             interaction,
             f"✅ Журнал модерации: {channel.mention if channel else 'выключен'}",

@@ -58,9 +58,7 @@ def scene(*, can_send: bool = True):
     return guild, channel, member
 
 
-def interaction_for(
-    guild, channel, member, *, message=None, values=None
-) -> FakeInteraction:
+def interaction_for(guild, channel, member, *, message=None, values=None) -> FakeInteraction:
     return FakeInteraction(
         user=member, guild=guild, channel=channel, message=message, values=values
     )
@@ -122,14 +120,8 @@ async def test_every_component_acknowledges_its_interaction(loaded_bot) -> None:
     failures: list[str] = []
 
     for name, view, item in view_cases(loaded_bot):
-        values = (
-            [item.options[0].value]
-            if isinstance(item, ui.Select) and item.options
-            else None
-        )
-        interaction = interaction_for(
-            guild, channel, member, message=MagicMessage(), values=values
-        )
+        values = [item.options[0].value] if isinstance(item, ui.Select) and item.options else None
+        interaction = interaction_for(guild, channel, member, message=MagicMessage(), values=values)
         try:
             record = await drive(view, item, interaction)
         except DoubleResponse as error:
@@ -138,9 +130,7 @@ async def test_every_component_acknowledges_its_interaction(loaded_bot) -> None:
         if not record.acknowledged:
             failures.append(f"{name}: returned without acknowledging the interaction")
 
-    assert not failures, "unacknowledged or double-answered components:\n" + "\n".join(
-        failures
-    )
+    assert not failures, "unacknowledged or double-answered components:\n" + "\n".join(failures)
 
 
 class MagicMessage:
@@ -160,8 +150,15 @@ class MagicMessage:
 #  Playback controls
 # --------------------------------------------------------------------------- #
 STEERING_CONTROLS = [
-    "np:back", "np:play_pause", "np:skip", "np:stop",
-    "np:shuffle", "np:loop", "np:vol_down", "np:vol_up", "np:jump",
+    "np:back",
+    "np:play_pause",
+    "np:skip",
+    "np:stop",
+    "np:shuffle",
+    "np:loop",
+    "np:vol_down",
+    "np:vol_up",
+    "np:jump",
 ]
 ALL_CONTROLS = [*STEERING_CONTROLS, "np:queue"]
 CID_SKIP = "np:skip"
@@ -226,7 +223,8 @@ class TestRulesPanel:
         guild, channel, member = scene()
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Согласен с правилами"),
+            view,
+            self._button(view, "Согласен с правилами"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_message"]
@@ -240,15 +238,14 @@ class TestRulesPanel:
 
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Согласен с правилами"),
+            view,
+            self._button(view, "Согласен с правилами"),
             interaction_for(guild, channel, member),
         )
         assert record.acknowledged
         member.add_roles.assert_not_awaited()
 
-    async def test_verify_is_idempotent_for_an_already_verified_member(
-        self, loaded_bot
-    ) -> None:
+    async def test_verify_is_idempotent_for_an_already_verified_member(self, loaded_bot) -> None:
         guild, channel, member = scene()
         role = make_role(778, position=2, name="Verified")
         guild.get_role = lambda _id: role
@@ -257,7 +254,8 @@ class TestRulesPanel:
 
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Согласен с правилами"),
+            view,
+            self._button(view, "Согласен с правилами"),
             interaction_for(guild, channel, member),
         )
         assert record.acknowledged
@@ -267,7 +265,8 @@ class TestRulesPanel:
         guild, channel, member = scene()
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Связаться с администрацией"),
+            view,
+            self._button(view, "Связаться с администрацией"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_message"]
@@ -275,31 +274,32 @@ class TestRulesPanel:
 
     async def test_ticket_button_opens_the_modal_once_configured(self, loaded_bot) -> None:
         guild, channel, member = scene()
-        await loaded_bot.db.update_ticket_config(
-            guild.id, category_id=1, support_role_id=2
-        )
+        await loaded_bot.db.update_ticket_config(guild.id, category_id=1, support_role_id=2)
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Связаться с администрацией"),
+            view,
+            self._button(view, "Связаться с администрацией"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_modal"] and record.modals
 
     async def test_open_ticket_limit_is_enforced_and_answered(self, loaded_bot) -> None:
         guild, channel, member = scene()
-        await loaded_bot.db.update_ticket_config(
-            guild.id, category_id=1, support_role_id=2
-        )
+        await loaded_bot.db.update_ticket_config(guild.id, category_id=1, support_role_id=2)
         from cogs.tickets import MAX_OPEN_TICKETS
 
         for n in range(MAX_OPEN_TICKETS):
             await loaded_bot.db.create_ticket(
-                guild_id=guild.id, channel_id=500 + n, owner_id=member.id,
-                category=None, subject=None,
+                guild_id=guild.id,
+                channel_id=500 + n,
+                owner_id=member.id,
+                category=None,
+                subject=None,
             )
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Связаться с администрацией"),
+            view,
+            self._button(view, "Связаться с администрацией"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_message"] and not record.modals
@@ -308,7 +308,8 @@ class TestRulesPanel:
         guild, channel, member = scene()
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Команды бота"),
+            view,
+            self._button(view, "Команды бота"),
             interaction_for(guild, channel, member),
         )
         assert record.acknowledged
@@ -328,7 +329,8 @@ class TestTicketControls:
         guild, channel, member = scene()
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Взять в работу"),
+            view,
+            self._button(view, "Взять в работу"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert record.acks == ["send_message"]
@@ -337,12 +339,16 @@ class TestTicketControls:
         guild, channel, member = scene()
         member.guild_permissions = discord.Permissions.none()
         await loaded_bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Взять в работу"),
+            view,
+            self._button(view, "Взять в работу"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert record.acks == ["send_message"]
@@ -351,17 +357,22 @@ class TestTicketControls:
         """Two moderators clicking at once: the loser needs a reason, not silence."""
         guild, channel, member = scene()
         await loaded_bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         first = await drive(
-            (v1 := self._view(loaded_bot)), self._button(v1, "Взять в работу"),
+            (v1 := self._view(loaded_bot)),
+            self._button(v1, "Взять в работу"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert first.acknowledged
 
         second = await drive(
-            (v2 := self._view(loaded_bot)), self._button(v2, "Взять в работу"),
+            (v2 := self._view(loaded_bot)),
+            self._button(v2, "Взять в работу"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert second.acks == ["send_message"]
@@ -369,12 +380,16 @@ class TestTicketControls:
     async def test_close_from_the_panel_answers(self, loaded_bot) -> None:
         guild, channel, member = scene()
         await loaded_bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         view = self._view(loaded_bot)
         record = await drive(
-            view, self._button(view, "Закрыть тикет"),
+            view,
+            self._button(view, "Закрыть тикет"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert record.acknowledged
@@ -382,13 +397,17 @@ class TestTicketControls:
     async def test_closing_twice_answers_the_second_press(self, loaded_bot) -> None:
         guild, channel, member = scene()
         await loaded_bot.db.create_ticket(
-            guild_id=guild.id, channel_id=channel.id, owner_id=5,
-            category=None, subject=None,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            owner_id=5,
+            category=None,
+            subject=None,
         )
         for expected_ack in (True, True):
             view = self._view(loaded_bot)
             record = await drive(
-                view, self._button(view, "Закрыть тикет"),
+                view,
+                self._button(view, "Закрыть тикет"),
                 interaction_for(guild, channel, member, message=MagicMessage()),
             )
             assert record.acknowledged is expected_ack
@@ -406,9 +425,7 @@ class TestBuilder:
         return view, guild, channel, member
 
     def _button(self, view, label):
-        return next(
-            i for i in interactive_items(view) if getattr(i, "label", "") == label
-        )
+        return next(i for i in interactive_items(view) if getattr(i, "label", "") == label)
 
     @pytest.mark.parametrize(
         "label",
@@ -438,21 +455,21 @@ class TestBuilder:
             view.state.add_field(f"f{i}", "v", inline=False)
         view.render()
         record = await drive(
-            view, self._button(view, "Разделитель"),
+            view,
+            self._button(view, "Разделитель"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_message"]
 
-    async def test_publishing_an_oversized_embed_is_refused_not_attempted(
-        self, loaded_bot
-    ) -> None:
+    async def test_publishing_an_oversized_embed_is_refused_not_attempted(self, loaded_bot) -> None:
         view, guild, channel, member = self._builder(loaded_bot)
         view.state.embed.description = "x" * 4000
         for i in range(3):
             view.state.add_field(f"f{i}", "y" * 1000, inline=False)
         view.render()
         record = await drive(
-            view, self._button(view, "Опубликовать"),
+            view,
+            self._button(view, "Опубликовать"),
             interaction_for(guild, channel, member),
         )
         assert record.acks == ["send_message"]
@@ -466,7 +483,8 @@ class TestBuilder:
         member = make_member(1, guild=guild, top_role_position=10)
         view = GigaBuilderView(member, channel, None, loaded_bot)
         record = await drive(
-            view, self._button(view, "Опубликовать"),
+            view,
+            self._button(view, "Опубликовать"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert record.acknowledged
@@ -475,7 +493,8 @@ class TestBuilder:
         view, guild, channel, member = self._builder(loaded_bot)
         assert view.state.publish_format == "embed"
         record = await drive(
-            view, self._button(view, "Формат: эмбед"),
+            view,
+            self._button(view, "Формат: эмбед"),
             interaction_for(guild, channel, member),
         )
         assert record.acknowledged
@@ -484,19 +503,19 @@ class TestBuilder:
     async def test_cancel_answers(self, loaded_bot) -> None:
         view, guild, channel, member = self._builder(loaded_bot)
         record = await drive(
-            view, self._button(view, "Отменить"),
+            view,
+            self._button(view, "Отменить"),
             interaction_for(guild, channel, member, message=MagicMessage()),
         )
         assert record.acknowledged
 
-    async def test_someone_elses_builder_is_refused_and_answered(
-        self, loaded_bot
-    ) -> None:
+    async def test_someone_elses_builder_is_refused_and_answered(self, loaded_bot) -> None:
         """interaction_check must answer, or the stranger's click hangs."""
         view, guild, channel, _owner = self._builder(loaded_bot)
         stranger = make_member(42, guild=guild)
         record = await drive(
-            view, self._button(view, "Основное"),
+            view,
+            self._button(view, "Основное"),
             interaction_for(guild, channel, stranger),
         )
         assert record.acks == ["send_message"]
@@ -532,7 +551,10 @@ class TestSelects:
             view,
             select,
             interaction_for(
-                guild, channel, member, message=MagicMessage(),
+                guild,
+                channel,
+                member,
+                message=MagicMessage(),
                 values=[select.options[-1].value],
             ),
         )
@@ -554,19 +576,17 @@ class TestSelects:
         assert len(selects) == 2
 
         first = await drive(
-            view, selects[0],
-            interaction_for(
-                guild, channel, member, message=MagicMessage(), values=["0"]
-            ),
+            view,
+            selects[0],
+            interaction_for(guild, channel, member, message=MagicMessage(), values=["0"]),
         )
         assert first.acks == ["defer"], "half-finished choice must still acknowledge"
         assert [f.name for f in builder.state.embed.fields] == ["A", "B", "C"]
 
         second = await drive(
-            view, selects[1],
-            interaction_for(
-                guild, channel, member, message=MagicMessage(), values=["2"]
-            ),
+            view,
+            selects[1],
+            interaction_for(guild, channel, member, message=MagicMessage(), values=["2"]),
         )
         assert second.acknowledged
         assert [f.name for f in builder.state.embed.fields] == ["B", "A", "C"]
@@ -578,15 +598,15 @@ class TestSelects:
         guild, channel, member = scene()
         view = GigaBuilderView(member, channel, None, loaded_bot)
         select = next(
-            i for i in interactive_items(view)
+            i
+            for i in interactive_items(view)
             if isinstance(i, ui.Select) and "цвет" in (i.placeholder or "").lower()
         )
         chosen = list(PRESET_COLORS)[1]
         record = await drive(
-            view, select,
-            interaction_for(
-                guild, channel, member, message=MagicMessage(), values=[chosen]
-            ),
+            view,
+            select,
+            interaction_for(guild, channel, member, message=MagicMessage(), values=[chosen]),
         )
         assert record.acknowledged
         assert view.state.embed.colour == PRESET_COLORS[chosen]
@@ -621,4 +641,6 @@ class TestErrorPaths:
         view = GigaBuilderView(member, channel, None, loaded_bot)
         view.message = None
         await view.on_timeout()
-        assert not [i for i in interactive_items(view) if not i.disabled] or not interactive_items(view)
+        assert not [i for i in interactive_items(view) if not i.disabled] or not interactive_items(
+            view
+        )

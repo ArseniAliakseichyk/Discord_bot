@@ -127,9 +127,7 @@ class TestYouTube:
 
     def test_a_youtube_playlist_resolves(self) -> None:
         """Bulk queueing has to work somewhere, since Spotify's does not."""
-        payload = load(
-            "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"
-        )
+        payload = load("https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
         assert payload["loadType"] == "playlist", payload
         assert len(payload["data"]["tracks"]) > 1
 
@@ -186,7 +184,7 @@ class TestBotResolverAgainstRealNode:
     """The routing in Music._resolve, checked against live results."""
 
     def test_prefixed_queries_are_not_double_prefixed(self) -> None:
-        """"spsearch:x" must not be sent as "ytsearch:spsearch:x"."""
+        """ "spsearch:x" must not be sent as "ytsearch:spsearch:x"."""
         good = load("spsearch:daft punk one more time")
         bad = load("ytsearch:spsearch:daft punk one more time")
         assert first_track(good)["sourceName"] == "spotify"

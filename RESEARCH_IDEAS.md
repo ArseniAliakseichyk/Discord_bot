@@ -226,17 +226,29 @@ CREATE TABLE shop (
 ```python
 ANSWERS = [
     # Положительные (10)
-    "Бесспорно", "Предрешено", "Никаких сомнений",
-    "Определённо да", "Можешь быть уверен в этом",
-    "Мне кажется — да", "Вероятнее всего", "Хорошие перспективы",
-    "Знаки говорят — да", "Да",
+    "Бесспорно",
+    "Предрешено",
+    "Никаких сомнений",
+    "Определённо да",
+    "Можешь быть уверен в этом",
+    "Мне кажется — да",
+    "Вероятнее всего",
+    "Хорошие перспективы",
+    "Знаки говорят — да",
+    "Да",
     # Нейтральные (5)
-    "Пока не ясно, попробуй снова", "Спроси позже",
-    "Лучше не рассказывать", "Сейчас нельзя предсказать",
+    "Пока не ясно, попробуй снова",
+    "Спроси позже",
+    "Лучше не рассказывать",
+    "Сейчас нельзя предсказать",
     "Сконцентрируйся и спроси опять",
     # Отрицательные (6)
-    "Даже не думай", "Мой ответ — нет", "По моим данным — нет",
-    "Перспективы не очень", "Весьма сомнительно", "Нет"
+    "Даже не думай",
+    "Мой ответ — нет",
+    "По моим данным — нет",
+    "Перспективы не очень",
+    "Весьма сомнительно",
+    "Нет",
 ]
 ```
 
@@ -253,9 +265,11 @@ ANSWERS = [
 async def rock(self, interaction, button):
     await self.play(interaction, "rock")
 
+
 @ui.button(label="📄", style=discord.ButtonStyle.secondary)
 async def paper(self, interaction, button):
     await self.play(interaction, "paper")
+
 
 @ui.button(label="✂️", style=discord.ButtonStyle.secondary)
 async def scissors(self, interaction, button):
@@ -341,7 +355,7 @@ async def scissors(self, interaction, button):
 thread = await channel.create_thread(
     name=f"🎰 Блэкджек — {user.name}",
     auto_archive_duration=1440,  # 24 часа
-    type=discord.ChannelType.public_thread
+    type=discord.ChannelType.public_thread,
 )
 ```
 
@@ -355,11 +369,7 @@ thread = await channel.create_thread(
 
 **Использование:**
 ```python
-await interaction.response.send_message(
-    embed=game_embed,
-    view=game_view,
-    ephemeral=True
-)
+await interaction.response.send_message(embed=game_embed, view=game_view, ephemeral=True)
 ```
 
 ---
@@ -418,12 +428,12 @@ await interaction.response.send_message(
 **Параметры детекции:**
 ```python
 SPAM_CONFIG = {
-    "message_limit": 5,      # сообщений
-    "time_window": 10,       # секунд
-    "duplicate_limit": 3,    # одинаковых сообщений
-    "emoji_limit": 10,       # эмодзи в сообщении
-    "mention_limit": 5,      # упоминаний
-    "caps_threshold": 0.7,   # 70% заглавных букв
+    "message_limit": 5,  # сообщений
+    "time_window": 10,  # секунд
+    "duplicate_limit": 3,  # одинаковых сообщений
+    "emoji_limit": 10,  # эмодзи в сообщении
+    "mention_limit": 5,  # упоминаний
+    "caps_threshold": 0.7,  # 70% заглавных букв
 }
 ```
 
@@ -440,9 +450,9 @@ SPAM_CONFIG = {
 WORD_FILTER = {
     "blacklist": ["слово1", "слово2"],
     "whitelist_channels": [123456789],  # каналы-исключения
-    "whitelist_roles": [987654321],     # роли-исключения
+    "whitelist_roles": [987654321],  # роли-исключения
     "action": "delete",  # delete, warn, mute
-    "log": True
+    "log": True,
 }
 ```
 
@@ -456,10 +466,10 @@ WORD_FILTER = {
 **Детекция:**
 ```python
 RAID_CONFIG = {
-    "join_threshold": 10,     # пользователей
-    "join_window": 60,        # секунд
-    "new_account_days": 7,    # аккаунт моложе X дней
-    "action": "lockdown"      # lockdown, kick_new, alert
+    "join_threshold": 10,  # пользователей
+    "join_window": 60,  # секунд
+    "new_account_days": 7,  # аккаунт моложе X дней
+    "action": "lockdown",  # lockdown, kick_new, alert
 }
 ```
 
@@ -479,10 +489,14 @@ RAID_CONFIG = {
 **Whitelist:**
 ```python
 ALLOWED_DOMAINS = [
-    "youtube.com", "youtu.be",
-    "spotify.com", "open.spotify.com",
-    "twitch.tv", "twitter.com",
-    "github.com", "imgur.com"
+    "youtube.com",
+    "youtu.be",
+    "spotify.com",
+    "open.spotify.com",
+    "twitch.tv",
+    "twitter.com",
+    "github.com",
+    "imgur.com",
 ]
 ```
 
@@ -566,9 +580,9 @@ CREATE TABLE mod_actions (
 
 ```python
 AUTO_PUNISHMENTS = {
-    3: {"action": "mute", "duration": 3600},      # 3 варна = мут 1 час
-    5: {"action": "mute", "duration": 86400},     # 5 варнов = мут 24 часа
-    7: {"action": "ban", "duration": None}        # 7 варнов = перманент бан
+    3: {"action": "mute", "duration": 3600},  # 3 варна = мут 1 час
+    5: {"action": "mute", "duration": 86400},  # 5 варнов = мут 24 часа
+    7: {"action": "ban", "duration": None},  # 7 варнов = перманент бан
 }
 ```
 
@@ -647,9 +661,7 @@ class ModLogger:
             return
 
         embed = discord.Embed(
-            title="📝 Сообщение удалено",
-            color=discord.Color.red(),
-            timestamp=datetime.utcnow()
+            title="📝 Сообщение удалено", color=discord.Color.red(), timestamp=datetime.utcnow()
         )
         embed.add_field(name="Автор", value=f"{message.author} ({message.author.id})")
         embed.add_field(name="Канал", value=message.channel.mention)
@@ -986,7 +998,8 @@ async def pick_winners(message_id, count):
 **Формула XP для уровня:**
 ```python
 def xp_for_level(level):
-    return 5 * (level ** 2) + 50 * level + 100
+    return 5 * (level**2) + 50 * level + 100
+
 
 # Level 1: 155 XP
 # Level 5: 475 XP
@@ -1008,7 +1021,7 @@ LEVEL_REWARDS = {
     10: {"role": "Постоянный", "channel": "vip-chat"},
     20: {"role": "Ветеран", "custom_color": True},
     30: {"role": "Легенда", "custom_emoji": True},
-    50: {"role": "Элита", "special_perks": True}
+    50: {"role": "Элита", "special_perks": True},
 }
 ```
 
@@ -1297,6 +1310,7 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "astrabot.db"
 
+
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
@@ -1366,8 +1380,9 @@ import discord
 from discord import app_commands, ui
 import random
 
-CARDS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
-SUITS = ['♠️', '♥️', '♦️', '♣️']
+CARDS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+SUITS = ["♠️", "♥️", "♦️", "♣️"]
+
 
 class BlackjackGame:
     def __init__(self, user_id: int, bet: int):
@@ -1384,15 +1399,15 @@ class BlackjackGame:
         self.dealer_hand = [self.deck.pop(), self.deck.pop()]
 
     def card_value(self, card):
-        if card[0] in ['J', 'Q', 'K']:
+        if card[0] in ["J", "Q", "K"]:
             return 10
-        elif card[0] == 'A':
+        elif card[0] == "A":
             return 11
         return int(card[0])
 
     def hand_value(self, hand):
         value = sum(self.card_value(c) for c in hand)
-        aces = sum(1 for c in hand if c[0] == 'A')
+        aces = sum(1 for c in hand if c[0] == "A")
         while value > 21 and aces:
             value -= 10
             aces -= 1
@@ -1402,6 +1417,7 @@ class BlackjackGame:
         if hide_second:
             return f"{hand[0][0]}{hand[0][1]} 🂠"
         return " ".join(f"{c[0]}{c[1]}" for c in hand)
+
 
 class BlackjackView(ui.View):
     def __init__(self, game: BlackjackGame):
@@ -1441,6 +1457,7 @@ class BlackjackView(ui.View):
                 self.game.dealer_hand.append(self.game.deck.pop())
             self.game.game_over = True
             await self.end_game(interaction, self.determine_winner())
+
 
 @app_commands.command(name="blackjack", description="Играть в блэкджек")
 async def blackjack(interaction: discord.Interaction, bet: int):
@@ -1544,7 +1561,7 @@ async def blackjack(interaction: discord.Interaction, bet: int):
 await interaction.response.send_message(
     embed=game_embed,
     view=game_view,
-    ephemeral=True  # Только игрок видит
+    ephemeral=True,  # Только игрок видит
 )
 ```
 
@@ -1562,8 +1579,8 @@ class PersistentView(discord.ui.View):
         super().__init__(timeout=None)  # Никогда не истекает
 
     @discord.ui.button(custom_id="persistent_button")
-    async def button(self, interaction, button):
-        ...
+    async def button(self, interaction, button): ...
+
 
 # В on_ready:
 bot.add_view(PersistentView())
@@ -1574,10 +1591,10 @@ bot.add_view(PersistentView())
 from discord.app_commands import cooldown
 from discord import app_commands
 
+
 @app_commands.command()
 @app_commands.checks.cooldown(1, 86400)  # 1 раз в 24 часа
-async def daily(interaction):
-    ...
+async def daily(interaction): ...
 ```
 
 ---

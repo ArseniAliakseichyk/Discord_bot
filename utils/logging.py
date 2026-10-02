@@ -116,9 +116,7 @@ def _split_lines(lines: list[str], limit: int = _CHUNK_LIMIT) -> list[str]:
     return chunks
 
 
-async def _drain_to_channel(
-    bot: MusicBot, channel_id: int, handler: logging.Handler
-) -> None:
+async def _drain_to_channel(bot: MusicBot, channel_id: int, handler: logging.Handler) -> None:
     try:
         await bot.wait_until_ready()
         channel = bot.get_channel(channel_id)

@@ -73,5 +73,3 @@ async def test_joining_with_an_empty_whitelist_still_leaves(events) -> None:
     guild = joined(3)
     await cog.on_guild_join(guild)
     guild.leave.assert_awaited_once()
-
-

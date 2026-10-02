@@ -62,9 +62,7 @@ def clamp_text(text: str, limit: int = V2_TEXT_LIMIT) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def split_text(
-    text: str, limit: int = V2_TEXT_LIMIT, *, total: int | None = None
-) -> list[str]:
+def split_text(text: str, limit: int = V2_TEXT_LIMIT, *, total: int | None = None) -> list[str]:
     """Split ``text`` into chunks of at most ``limit`` characters.
 
     Splits on line boundaries where possible so markdown is not cut mid-block;
@@ -159,11 +157,7 @@ def make_panel(
     if body:
         # Reserve room for the title that was already added, and cap the total
         # so a long body cannot push the view past its 4000-character budget.
-        used = sum(
-            len(c.content)
-            for c in children
-            if isinstance(c, ui.TextDisplay)
-        ) + sum(
+        used = sum(len(c.content) for c in children if isinstance(c, ui.TextDisplay)) + sum(
             len(t.content)
             for c in children
             if isinstance(c, ui.Section)

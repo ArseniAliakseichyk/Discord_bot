@@ -38,11 +38,7 @@ class GuildSettingsCog(commands.Cog):
             return
         settings = await self.bot.db.get_settings(interaction.guild.id)
 
-        dj = (
-            interaction.guild.get_role(settings.dj_role_id)
-            if settings.dj_role_id
-            else None
-        )
+        dj = interaction.guild.get_role(settings.dj_role_id) if settings.dj_role_id else None
         channel = (
             interaction.guild.get_channel(settings.command_channel_id)
             if settings.command_channel_id
@@ -56,8 +52,7 @@ class GuildSettingsCog(commands.Cog):
                 f"**Канал команд:** {channel.mention if channel else 'не задан (любой канал)'}",
                 f"**Громкость по умолчанию:** {volume}%",
                 "",
-                "-# Тикеты настраиваются в `/ticket config`, "
-                "журнал модерации — в `/mod log`.",
+                "-# Тикеты настраиваются в `/ticket config`, журнал модерации — в `/mod log`.",
             )
         )
         view = PanelView(timeout=None)

@@ -114,13 +114,21 @@ class TestMainSettings:
     def test_timestamp_toggles(self) -> None:
         state = BuilderState()
         state.apply_main(
-            title="t", url=None, description=None, color=None,
-            clear_color=False, timestamp=True,
+            title="t",
+            url=None,
+            description=None,
+            color=None,
+            clear_color=False,
+            timestamp=True,
         )
         assert state.embed.timestamp is not None
         state.apply_main(
-            title="t", url=None, description=None, color=None,
-            clear_color=False, timestamp=False,
+            title="t",
+            url=None,
+            description=None,
+            color=None,
+            clear_color=False,
+            timestamp=False,
         )
         assert state.embed.timestamp is None
 

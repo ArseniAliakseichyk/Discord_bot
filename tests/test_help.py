@@ -54,8 +54,7 @@ class TestGeneratedFromTheTree:
             if not isinstance(command, app_commands.Group)
         }
         assert advertised(pages) <= registered, (
-            f"help lists commands the bot does not have: "
-            f"{advertised(pages) - registered}"
+            f"help lists commands the bot does not have: {advertised(pages) - registered}"
         )
 
     async def test_an_administrator_sees_every_category(self, bot) -> None:
@@ -90,9 +89,7 @@ class TestPermissionFiltering:
 
     async def test_a_moderator_is_offered_moderation(self, bot) -> None:
         help_cog = bot.get_cog("Help")
-        pages = help_cog.build_pages(
-            member_with(discord.Permissions(moderate_members=True))
-        )
+        pages = help_cog.build_pages(member_with(discord.Permissions(moderate_members=True)))
         assert "Moderation" in pages
 
     async def test_ticket_configuration_needs_manage_guild(self, bot) -> None:
@@ -135,9 +132,7 @@ class TestCategoriesMatchTheCogs:
             if getattr(command, "binding", None) is not None
         }
         uncategorised = with_commands - set(CATEGORIES) - {"Help"}
-        assert not uncategorised, (
-            f"these cogs have commands but no help page: {uncategorised}"
-        )
+        assert not uncategorised, f"these cogs have commands but no help page: {uncategorised}"
 
 
 class TestOwnerCommands:
@@ -153,9 +148,7 @@ class TestOwnerCommands:
         assert not {"authorize", "deauthorize", "servers"} & advertised(pages)
 
     async def test_the_owner_sees_them(self, bot) -> None:
-        pages = bot.get_cog("Help").build_pages(
-            member_with(discord.Permissions.all()), owner=True
-        )
+        pages = bot.get_cog("Help").build_pages(member_with(discord.Permissions.all()), owner=True)
         assert {"authorize", "deauthorize", "servers"} <= advertised(pages)
 
     async def test_the_command_picker_hides_them_from_non_admins(self, bot) -> None:
