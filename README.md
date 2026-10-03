@@ -42,7 +42,7 @@ server it is invited to otherwise.
 | **Access control** | Private-bot guild whitelist, owner-only `/authorize`, DJ-role and command-channel gates, role-hierarchy guards on moderation |
 | **Onboarding** | Persistent rules panel: one-click verification, support tickets in private channels with claim/close workflow |
 | **Resilience** | Auto-leave on idle / empty channel, Lavalink reconnect with backoff, queue **restored after restart**, panels survive restarts |
-| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 696-test pytest suite (681 offline + 15 end-to-end), ruff lint + format and mypy clean |
+| **Ops** | One `docker compose up` (bot + Lavalink), `.env`-driven config, non-blocking Discord log channel, 821-test pytest suite (801 offline + 20 end-to-end), ruff lint + format and mypy clean |
 
 ---
 
@@ -60,7 +60,7 @@ server it is invited to otherwise.
 | `/loop off\|track\|queue` | Repeat mode (DJ-gated) |
 | `/remove <n>` · `/move <n> <to>` | Queue editing, with autocomplete (DJ-gated) |
 | `/shuffle` · `/clear` | Shuffle / clear the queue (DJ-gated) |
-| `/autoplay on\|off` | Radio mode — auto-play similar tracks when the queue ends |
+| `/autoplay on\|off` | Radio — when the queue runs out, carry on with similar tracks (from YouTube's mix of the last track, Spotify tracks included); turned on in silence it starts at once from the last track played |
 | `/join` · `/jointo <ch>` · `/leave` | Voice channel management |
 
 Every command that changes playback - `/play` included - is accepted only from
@@ -75,7 +75,8 @@ the next three tracks, and the last action with who did it.
 |---|---|
 | ⏮️ | Previous track near the start; otherwise back to the start of this one |
 | ⏸️ / ▶️ | One button; shows the action it will perform |
-| ⏭️ · ⏹️ | Skip (resumes if paused) · stop and clear |
+| ⏭️ · ⏹️ | Skip (resumes if paused) · stop and clear (also turns radio off) |
+| 📻 | Radio on/off (green when on); its next picks show under *Далее* |
 | 🔀 · 🔁 | Shuffle · repeat: off → queue → track → off (green when on) |
 | 🔉 · 🔊 | Volume −10 / +10 |
 | 📜 | The full queue, shown only to you - no DJ role or voice needed |
@@ -260,10 +261,13 @@ assumed:
 | Album link (`/album/…`) | ❌ | LavaSrc reads albums via `GET /v1/tracks?ids=`, which Spotify **removed** in the [February 2026 migration](https://developer.spotify.com/documentation/web-api/references/changes/february-2026). May return once LavaSrc switches to `/v1/albums/{id}/tracks`, which still works |
 | Playlist link (`/playlist/…`) | ❌ | `GET /v1/playlists/{id}/items` now answers `401 valid user authentication required` — it needs a logged-in user, which a bot does not have |
 | Editorial playlists (`37i9dQZF1D…`) | ❌ | Spotify no longer exposes its own generated playlists to third-party apps at all |
+| Artist link (`/artist/…`) | ❌ | LavaSrc reads artists via `GET /v1/artists/{id}/top-tracks`, which answered `403 Forbidden` in production (October 2026) |
+| Recommendations (`sprec:`) | ❌ | Answers nothing — which is why radio uses YouTube's mix instead (see `/autoplay`) |
+| Search page link (`/search/…`) | ✅ | Not a track: the bot searches YouTube for the words in it |
 
 These are Spotify-side restrictions on Development Mode apps, not bot bugs;
 Extended Quota Mode (which lifts them) requires a company and 250k+ monthly
-users. The bot detects album and playlist links up front and says so, rather
+users. The bot detects album, playlist and artist links up front and says so, rather
 than letting the request fail as "nothing found". **YouTube playlists and albums
 are unaffected** — use those for bulk queueing.
 
@@ -306,7 +310,7 @@ venv/bin/python bot.py
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Optional — enables Spotify links and `spsearch:` |
 | `LOG_CHANNEL_ID` | Channel for WARNING+ logs and image uploads (optional) |
 | `ALLOWED_ROLES` / `DEFAULT_CHANNEL` | Roles allowed to announce / default announce channel |
-| `DEFAULT_VOLUME` · `MAX_TRACK_LENGTH` · `MAX_PLAYLIST_TRACKS` · `INACTIVE_TIMEOUT` | Music tuning |
+| `DEFAULT_VOLUME` · `MAX_TRACK_LENGTH` · `MAX_PLAYLIST_TRACKS` · `INACTIVE_TIMEOUT` | Music tuning. `MAX_TRACK_LENGTH` is in seconds, `0` (default) = no limit; live streams are never limited |
 | `MUSIC_FOLDER` / `LAVALINK_LOCAL_DIR` | Local files path (bot side / Lavalink container side) |
 | `DATABASE_PATH` | SQLite file path |
 
@@ -349,7 +353,7 @@ ui/
     panel.py           the panel itself
 utils/                 checks, formatting, mentions, moderation guards, logging
 lavalink/              application.yml (youtube-source + LavaSrc plugins)
-tests/                 pytest suite — 411 offline + 15 e2e
+tests/                 pytest suite — 801 offline + 20 e2e
 Dockerfile · docker-compose.yml
 ```
 
@@ -411,9 +415,12 @@ Dockerfile · docker-compose.yml
 - **If a plugin release stops working,** `YOUTUBE_PLUGIN_VERSION` /
   `YOUTUBE_PLUGIN_REPO` / `YOUTUBE_PLUGIN_SNAPSHOT` in `.env` switch to a
   snapshot build from `main` without editing any YAML.
+- **A video link that names a playlist** (`watch?v=…&list=…`) loads the whole
+  playlist. When that playlist is private or deleted YouTube fails the entire
+  link, so the bot then plays the video alone and says so.
 - **Restart recovery** restores the *queue* (and rejoins the voice channel if real
   users are still there); it does not resume the exact in-track position.
-- Run the tests with `pip install -r requirements-dev.txt && pytest` — 681 offline
+- Run the tests with `pip install -r requirements-dev.txt && pytest` — 801 offline
   tests, no network or Discord token needed. Failed-track handling is tested in
   `tests/test_playback_recovery.py` against the real wavelink `Player`, `Queue`
   and AutoPlay, fed by a scripted Lavalink (`tests/lavalink_stand.py`) through
