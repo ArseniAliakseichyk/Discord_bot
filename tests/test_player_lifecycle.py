@@ -483,16 +483,6 @@ class TestQueueEnd:
         assert not panel.deleted, "the panel was retired while the queue continued"
         assert guild.id in music.now_messages
 
-    async def test_autoplay_queue_also_counts_as_more_to_play(self, bot) -> None:
-        music, guild, player, home = setup_guild(bot)
-        await music.on_wavelink_track_start(start_payload(player, make_track("a")))
-        panel = home.sent[0]
-        player.playing = False
-        player.auto_queue.put(make_track("radio"))
-
-        await music.on_wavelink_track_end(self._end(player, make_track("a")))
-        assert not panel.deleted, "autoplay had a track queued but the panel was dropped"
-
     async def test_stop_does_not_post_a_queue_ended_notice(self, bot) -> None:
         """/stop already reports itself; a second message would be noise."""
         music, guild, player, home = setup_guild(bot)

@@ -65,19 +65,26 @@ VIDEO_UNAVAILABLE = (
 )
 
 
-def track_data(title: str, *, length: int = 180_000) -> dict[str, Any]:
+def track_data(
+    title: str,
+    *,
+    length: int = 180_000,
+    source: str = "youtube",
+    author: str = "artist",
+    stream: bool = False,
+) -> dict[str, Any]:
     return {
         "encoded": f"enc-{title}",
         "info": {
             "identifier": title,
-            "isSeekable": True,
-            "author": "artist",
+            "isSeekable": not stream,
+            "author": author,
             "length": length,
-            "isStream": False,
+            "isStream": stream,
             "position": 0,
             "title": title,
             "uri": f"https://example/{title}",
-            "sourceName": "youtube",
+            "sourceName": source,
             "artworkUrl": None,
             "isrc": None,
         },
@@ -113,6 +120,9 @@ class _Socket:
 @dataclass
 class _GuildState:
     loaded: str | None = None  # encoded track Lavalink is playing
+    # userData sent with that track; Lavalink echoes it in the track's events,
+    # which is how wavelink's event tracks carry the player's extras.
+    user_data: dict[str, Any] = field(default_factory=dict)
     paused: bool = False
     seeks: list[int] = field(default_factory=list)
 
@@ -170,7 +180,7 @@ class FakeLavalink:
             if not replace:
                 return {}
             self._end(guild_id, state.loaded, "replaced")
-        self._load(guild_id, encoded)
+        self._load(guild_id, encoded, data["track"].get("userData") or {})
         return {}
 
     async def _destroy_player(self, guild_id: int) -> None:
@@ -184,8 +194,9 @@ class FakeLavalink:
         self._tracks[track.encoded] = track_data(track.title, length=track.length)
         return track
 
-    def track(self, title: str, *, length: int = 180_000) -> wavelink.Playable:
-        data = track_data(title, length=length)
+    def track(self, title: str, *, length: int = 180_000, **info: Any) -> wavelink.Playable:
+        """A track Lavalink can play; ``info`` as for :func:`track_data`."""
+        data = track_data(title, length=length, **info)
         self._tracks[data["encoded"]] = data
         return wavelink.Playable(data)
 
@@ -221,12 +232,13 @@ class FakeLavalink:
         return self._tracks[loaded]["info"]["title"] if loaded else None
 
     # -- internals -----------------------------------------------------------
-    def _load(self, guild_id: int, encoded: str) -> None:
+    def _load(self, guild_id: int, encoded: str, user_data: dict[str, Any] | None = None) -> None:
         data = self._tracks[encoded]
         title = data["info"]["title"]
         self.plays.append(title)
         state = self.guilds[guild_id]
         state.loaded = encoded
+        state.user_data = dict(user_data or {})
         self._event(guild_id, "TrackStartEvent", encoded)
         outcomes = self.script[title]
         outcome = outcomes.popleft() if outcomes else "ok"
@@ -254,7 +266,7 @@ class FakeLavalink:
                 "op": "event",
                 "type": kind,
                 "guildId": str(guild_id),
-                "track": self._tracks[encoded],
+                "track": {**self._tracks[encoded], "userData": self.guilds[guild_id].user_data},
                 **extra,
             }
         )

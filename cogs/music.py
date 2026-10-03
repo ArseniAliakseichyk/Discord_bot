@@ -39,6 +39,7 @@ from ui.search import SearchView
 from ui.v2 import PanelView, make_panel
 from utils.checks import guild_authorized, has_dj, in_bot_voice, in_command_channel
 from utils.formatting import format_duration, format_ms, parse_position
+from utils.links import spotify_search_text, youtube_video_only
 from utils.playback_failures import (
     MAX_PLAY_RETRIES,
     Decision,
@@ -46,7 +47,16 @@ from utils.playback_failures import (
     Verdict,
     classify,
 )
-from utils.player import connect_and_configure, player_of
+from utils.player import connect_and_configure, is_live, player_of
+from utils.radio import (
+    RADIO_MEMORY,
+    choose,
+    is_radio_pick,
+    mark_radio_pick,
+    mix_url,
+    seed_search,
+    youtube_seed,
+)
 
 logger = logging.getLogger("bot.music")
 
@@ -121,6 +131,10 @@ SPOTIFY_HOSTS = ("open.spotify.com", "play.spotify.com", "spotify.link")
 #:   client-credentials bot does not have.
 SPOTIFY_BULK_PATHS = ("/album/", "/playlist/")
 
+#: Artist pages: LavaSrc loads them through ``GET /v1/artists/{id}/top-tracks``,
+#: which answered 403 Forbidden in production on 2026-10-03.
+SPOTIFY_ARTIST_PATH = "/artist/"
+
 #: Track-end reasons that genuinely mean "there is nothing more to play".
 #: Lavalink also sends "loadFailed" (already reported by the exception
 #: handler), "replaced" and "cleanup" (not endings). See
@@ -156,6 +170,23 @@ MSG_SPOTIFY_BULK = (
     "`spsearch: название`, плейлисты и альбомы **YouTube**."
 )
 
+MSG_SPOTIFY_ARTIST = (
+    "⚠️ Страницы исполнителей Spotify не открываются.\n"
+    "Spotify не отдаёт ботам популярные треки исполнителя (отвечает «доступ "
+    "запрещён») — это ограничение на его стороне, не в боте.\n\n"
+    "**Что работает:** ссылка на отдельный трек Spotify или просто имя "
+    "исполнителя в `/play`."
+)
+
+#: Added to the reply when a video-in-playlist link fell back to the video.
+MSG_PLAYLIST_UNAVAILABLE = (
+    "-# Плейлист из ссылки недоступен (приватный или удалён) — добавлено только видео."
+)
+
+
+def _with_note(text: str, note: str | None) -> str:
+    return f"{text}\n{note}" if note else text
+
 
 def _set_autoplay_errors(player: wavelink.Player, count: int) -> None:
     """Set wavelink's consecutive-failure counter (see WAVELINK_AUTOPLAY_ERROR_LIMIT).
@@ -172,8 +203,11 @@ class SpotifyNotConfigured(Exception):
     """A Spotify query arrived but the LavaSrc credentials are absent."""
 
 
-class SpotifyBulkUnsupported(Exception):
-    """A Spotify album/playlist link arrived; Spotify will not serve its items."""
+class SpotifyLinkUnsupported(Exception):
+    """A Spotify link whose contents Spotify will not serve to a bot.
+
+    The message is the explanation for the user.
+    """
 
 
 class Music(commands.Cog):
@@ -206,6 +240,15 @@ class Music(commands.Cog):
         # "the old" panel, both posted, and one panel was left behind with
         # live buttons.
         self._panel_locks: dict[int, asyncio.Lock] = {}
+        # Radio (see utils/radio.py): the guilds that have it on, what each
+        # guild played lately so radio does not repeat itself, and one radio
+        # step at a time per guild - a track end and a skip can ask together.
+        self._radio: set[int] = set()
+        self._played: dict[int, deque[str]] = {}
+        self._radio_locks: dict[int, asyncio.Lock] = {}
+        # Guilds where a radio pick failed for good: radio moves on at its
+        # loadFailed end, which the end handler otherwise ignores.
+        self._radio_resume: set[int] = set()
 
     # ------------------------------------------------------------------ #
     #  Helpers
@@ -229,7 +272,7 @@ class Music(commands.Cog):
 
     def _track_too_long(self, track: wavelink.Playable) -> bool:
         max_seconds = self.bot.settings.max_track_length
-        if max_seconds <= 0 or track.is_stream or not track.length:
+        if max_seconds <= 0 or is_live(track) or not track.length:
             return False
         return track.length / 1000 > max_seconds
 
@@ -264,6 +307,11 @@ class Music(commands.Cog):
         lowered = query.lower()
         return cls._is_spotify(lowered) and any(part in lowered for part in SPOTIFY_BULK_PATHS)
 
+    @classmethod
+    def _is_spotify_artist(cls, query: str) -> bool:
+        lowered = query.lower()
+        return cls._is_spotify(lowered) and SPOTIFY_ARTIST_PATH in lowered
+
     async def _resolve(self, query: str) -> wavelink.Search:
         """Turn a user query into tracks.
 
@@ -273,13 +321,17 @@ class Music(commands.Cog):
         credential check — Lavalink's LavaSrc source manager claims the URL, and
         wavelink never prefixes a URL.
         """
+        # A link to Spotify's search page carries words, not a track.
+        query = spotify_search_text(query) or query
         if self._is_spotify(query):
             if not self.bot.settings.spotify_enabled:
                 raise SpotifyNotConfigured
+            # Fail fast with an explanation rather than letting LavaSrc hit
+            # the endpoint Spotify refuses and surface "nothing found".
             if self._is_spotify_bulk(query):
-                # Fail fast with an explanation rather than letting LavaSrc hit
-                # the endpoint Spotify refuses and surface "nothing found".
-                raise SpotifyBulkUnsupported
+                raise SpotifyLinkUnsupported(MSG_SPOTIFY_BULK)
+            if self._is_spotify_artist(query):
+                raise SpotifyLinkUnsupported(MSG_SPOTIFY_ARTIST)
 
         # is_file() hits the filesystem; keep the blocking syscall off the loop.
         local_path = await asyncio.to_thread(self._local_file, query)
@@ -291,6 +343,171 @@ class Music(commands.Cog):
             return await wavelink.Playable.search(query, source=None)
 
         return await wavelink.Playable.search(query, source=wavelink.TrackSource.YouTube)
+
+    async def _lookup(self, query: str) -> tuple[wavelink.Search, str | None]:
+        """``_resolve``, plus the one recovery a failed link allows.
+
+        Returns the result and a note for the user when it is not quite what
+        they pasted.
+        """
+        try:
+            return await self._resolve(query), None
+        except wavelink.LavalinkLoadException:
+            video = youtube_video_only(query)
+            if video is None:
+                raise
+        logger.info("The playlist in %r did not load; trying the video alone", query)
+        return await self._resolve(video), MSG_PLAYLIST_UNAVAILABLE
+
+    # ------------------------------------------------------------------ #
+    #  Radio
+    # ------------------------------------------------------------------ #
+    def radio_on(self, guild_id: int) -> bool:
+        return guild_id in self._radio
+
+    async def set_radio(
+        self,
+        player: wavelink.Player,
+        enabled: bool,
+        user: discord.abc.User | None,
+        *,
+        redraw: bool = True,
+        channel_id: int | None = None,
+    ) -> str:
+        """Turn radio on or off. Returns what to tell whoever did it.
+
+        Turned on with nothing playing, radio starts at once from the last
+        track played: otherwise "on" did nothing visible until someone played
+        a track, which looked exactly like radio not working.
+        """
+        if player.guild is None:
+            return MSG_BOT_NOT_CONNECTED
+        guild_id = player.guild.id
+        if channel_id is not None:
+            self.home_channels[guild_id] = channel_id
+        self.note_action(guild_id, user, "📻 Радио включено" if enabled else "📻 Радио выключено")
+        if not enabled:
+            self._radio.discard(guild_id)
+            player.auto_queue.clear()
+            if redraw:
+                await self.refresh_now_message(player)
+            return "📻 Радио выключено."
+        self._radio.add(guild_id)
+        if player.current is not None or not player.queue.is_empty:
+            if redraw:
+                await self.refresh_now_message(player)
+            return (
+                "📻 Радио включено — когда очередь закончится, музыка продолжится похожими треками."
+            )
+        seed = self._last_played(player)
+        if seed is None:
+            return (
+                "📻 Радио включено. Включите любой трек через `/play` — "
+                "после него музыка будет подбираться сама."
+            )
+        if await self.radio_next(player, seed, fresh_start=True):
+            return f"📻 Радио включено — подбираю похожее на «{plain(seed.title)}»."
+        return "📻 Радио включено, но похожих треков не нашлось. Включите трек через `/play`."
+
+    @staticmethod
+    def _last_played(player: wavelink.Player) -> wavelink.Playable | None:
+        history = player.queue.history
+        if history is None or history.is_empty:
+            return None
+        return history[-1]
+
+    def _radio_may_play(self, player: wavelink.Player) -> bool:
+        """Radio is on and nothing else is about to play."""
+        if player.guild is None:
+            return False
+        guild_id = player.guild.id
+        return (
+            guild_id in self._radio
+            and guild_id not in self._stopping
+            and player.current is None
+            and player.queue.is_empty
+            # Repeat modes carry on by themselves; radio would play over them.
+            and player.queue.mode is wavelink.QueueMode.normal
+        )
+
+    async def radio_next(
+        self,
+        player: wavelink.Player,
+        seed: wavelink.Playable | None = None,
+        *,
+        fresh_start: bool = False,
+    ) -> bool:
+        """Play radio's next pick. False when radio has nothing to play.
+
+        ``seed`` is the track that just ended; without one, the last track
+        played. ``fresh_start`` marks a person asking (a skip, turning radio
+        on): only then does a run of failed picks start counting again, or a
+        source that refuses every pick would keep radio failing forever.
+        """
+        if player.guild is None:
+            return False
+        guild_id = player.guild.id
+        async with self._radio_locks.setdefault(guild_id, asyncio.Lock()):
+            if not self._radio_may_play(player):
+                return False
+            picks = player.auto_queue
+            track = self._next_pick(picks, guild_id)
+            if track is None:
+                seed = seed or self._last_played(player)
+                if seed is None:
+                    return False
+                for pick in await self._radio_picks(seed, guild_id):
+                    mark_radio_pick(pick)
+                    picks.put(pick)
+                if not self._radio_may_play(player):
+                    # Someone queued a track or stopped while radio was
+                    # looking; the picks wait for the next time.
+                    return False
+                track = self._next_pick(picks, guild_id)
+            if track is None:
+                logger.info(
+                    "Radio found nothing like %r in guild %s",
+                    seed.title if seed else None,
+                    guild_id,
+                )
+                return False
+            if fresh_start:
+                self._failures.resume_queue(guild_id)
+            _set_autoplay_errors(player, 0)
+            logger.info("Radio plays %r in guild %s", track.title, guild_id)
+            await player.play(track, paused=False)
+            return True
+
+    def _next_pick(self, picks: wavelink.Queue, guild_id: int) -> wavelink.Playable | None:
+        played = self._played.get(guild_id, ())
+        while not picks.is_empty:
+            track = picks.get()
+            if self._track_key(track) not in played:
+                return track
+        return None
+
+    async def _radio_picks(self, seed: wavelink.Playable, guild_id: int) -> list[wavelink.Playable]:
+        """Tracks like ``seed``, from YouTube's mix for it."""
+        video = youtube_seed(seed)
+        if video is None:
+            query = seed_search(seed)
+            found = await self._radio_search(query) if query else []
+            video = youtube_seed(found[0]) if found else None
+        if video is None:
+            return []
+        mix = await self._radio_search(mix_url(video))
+        played = {*self._played.get(guild_id, ()), video}
+        return choose(mix, played=played, too_long=self._track_too_long)
+
+    async def _radio_search(self, query: str) -> list[wavelink.Playable]:
+        try:
+            result = await wavelink.Playable.search(query, source=None)
+        except (wavelink.LavalinkException, wavelink.LavalinkLoadException) as error:
+            logger.warning("Radio lookup failed for %r: %s", query, error)
+            return []
+        if isinstance(result, wavelink.Playlist):
+            return list(result.tracks)
+        return list(result)
 
     async def maybe_start(self, player: wavelink.Player) -> None:
         if not player.playing and not player.queue.is_empty:
@@ -345,6 +562,9 @@ class Music(commands.Cog):
             _set_autoplay_errors(player, 0)
             await player.play(queue.get(), paused=False)
             return True
+        if self.radio_on(player.guild.id) and await self.radio_next(player, fresh_start=True):
+            self.note_action(player.guild.id, user, "⏭️ Радио продолжено")
+            return True
         return withdrawn is not None
 
     # ------------------------------------------------------------------ #
@@ -391,7 +611,7 @@ class Music(commands.Cog):
             len(items) - 1 if items and track_key(items[-1]) == track_key(current) else len(items)
         )
         if player.position > BACK_RESTART_MS or here == 0 or history is None:
-            if current.is_seekable and not current.is_stream:
+            if current.is_seekable and not is_live(current):
                 self.note_action(guild_id, user, "⏮️ Трек сначала")
                 await player.seek(0)
                 await self.refresh_now_message(player)
@@ -638,6 +858,10 @@ class Music(commands.Cog):
         self._last_actions.pop(guild_id, None)
         self._panel_locks.pop(guild_id, None)
         self._stopping.discard(guild_id)
+        self._radio.discard(guild_id)
+        self._played.pop(guild_id, None)
+        self._radio_locks.pop(guild_id, None)
+        self._radio_resume.discard(guild_id)
 
     async def stop_player(
         self, player: wavelink.Player, *, by: discord.abc.User | None = None
@@ -647,6 +871,10 @@ class Music(commands.Cog):
         guild_id = player.guild.id
         self._stopping.add(guild_id)
         try:
+            # Stop means silence: radio would otherwise answer the end of the
+            # stopped track with a new one.
+            self._radio.discard(guild_id)
+            self._radio_resume.discard(guild_id)
             player.autoplay = wavelink.AutoPlayMode.partial
             player.queue.clear()
             player.auto_queue.clear()
@@ -710,16 +938,18 @@ class Music(commands.Cog):
         self.home_channels[interaction.guild.id] = interaction.channel_id  # type: ignore[assignment]
 
         try:
-            result = await self._resolve(query.strip())
+            result, note = await self._lookup(query.strip())
         except SpotifyNotConfigured:
             await interaction.followup.send(MSG_SPOTIFY_DISABLED)
             return
-        except SpotifyBulkUnsupported:
-            await interaction.followup.send(MSG_SPOTIFY_BULK)
+        except SpotifyLinkUnsupported as refusal:
+            await interaction.followup.send(str(refusal))
             return
-        except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
-            logger.warning("Search failed for %r", query, exc_info=True)
-            await interaction.followup.send("⚠️ Не удалось найти трек.")
+        except (wavelink.LavalinkException, wavelink.LavalinkLoadException) as error:
+            # One line: the cause is all there is to know, and it is the
+            # user's link that failed, not the bot.
+            logger.warning("Search failed for %r: %s", query, error)
+            await interaction.followup.send("⚠️ Не удалось загрузить трек по этому запросу.")
             return
 
         if not result:
@@ -737,7 +967,10 @@ class Music(commands.Cog):
                 player.queue.put(track)
             await self._announce(
                 interaction,
-                f"🎵 Добавлен плейлист **{plain(result.name)}** — {len(tracks)} треков.",
+                _with_note(
+                    f"🎵 Добавлен плейлист **{plain(result.name)}** — {len(tracks)} треков.",
+                    note,
+                ),
             )
         else:
             track = result[0]
@@ -747,7 +980,9 @@ class Music(commands.Cog):
                 return
             self._set_requester(track, interaction.user)  # type: ignore[arg-type]
             player.queue.put(track)
-            await self._announce(interaction, f"🎵 Добавлен трек: **{plain(track.title)}**")
+            await self._announce(
+                interaction, _with_note(f"🎵 Добавлен трек: **{plain(track.title)}**", note)
+            )
 
         await self.maybe_start(player)
         await self.refresh_now_message(player)  # "Далее" now lists it
@@ -767,15 +1002,15 @@ class Music(commands.Cog):
             await interaction.followup.send(MSG_JOIN_VOICE_FIRST)
             return
         try:
-            result = await self._resolve(query.strip())
+            result, _note = await self._lookup(query.strip())
         except SpotifyNotConfigured:
             await interaction.followup.send(MSG_SPOTIFY_DISABLED)
             return
-        except SpotifyBulkUnsupported:
-            await interaction.followup.send(MSG_SPOTIFY_BULK)
+        except SpotifyLinkUnsupported as refusal:
+            await interaction.followup.send(str(refusal))
             return
-        except (wavelink.LavalinkException, wavelink.LavalinkLoadException):
-            logger.warning("Search failed for %r", query, exc_info=True)
+        except (wavelink.LavalinkException, wavelink.LavalinkLoadException) as error:
+            logger.warning("Search failed for %r: %s", query, error)
             await interaction.followup.send("⚠️ Ошибка поиска.")
             return
         if isinstance(result, wavelink.Playlist):
@@ -899,7 +1134,7 @@ class Music(commands.Cog):
             await interaction.response.send_message(MSG_NOTHING_PLAYING, ephemeral=True)
             return
         track = player.current
-        if track.is_stream or not track.is_seekable:
+        if is_live(track) or not track.is_seekable:
             await interaction.response.send_message(
                 "❌ Этот трек нельзя перематывать (прямой эфир).", ephemeral=True
             )
@@ -1073,8 +1308,10 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message(MSG_BOT_NOT_CONNECTED, ephemeral=True)
 
-    @app_commands.command(name="autoplay", description="Радио: автоплей похожих треков")
-    @app_commands.describe(mode="Включить или выключить автоплей")
+    @app_commands.command(
+        name="autoplay", description="Радио: похожие треки, когда очередь закончится"
+    )
+    @app_commands.describe(mode="Включить или выключить радио")
     @app_commands.choices(
         mode=[
             app_commands.Choice(name="Включить (радио)", value="on"),
@@ -1092,20 +1329,13 @@ class Music(commands.Cog):
         if player is None:
             await interaction.response.send_message(MSG_BOT_NOT_CONNECTED, ephemeral=True)
             return
-        enabled = mode.value == "on"
-        player.autoplay = (
-            wavelink.AutoPlayMode.enabled if enabled else wavelink.AutoPlayMode.partial
+        # Starting radio from silence looks tracks up first, which can take
+        # longer than Discord waits for an answer.
+        await interaction.response.defer(ephemeral=True)
+        told = await self.set_radio(
+            player, mode.value == "on", interaction.user, channel_id=interaction.channel_id
         )
-        if interaction.guild is not None:
-            self.note_action(
-                interaction.guild.id,
-                interaction.user,
-                "📻 Автоплей включён" if enabled else "📻 Автоплей выключен",
-            )
-        await self.refresh_now_message(player)
-        await interaction.response.send_message(
-            "📻 Автоплей включён." if enabled else "⏹️ Автоплей выключен.", ephemeral=True
-        )
+        await interaction.followup.send(told, ephemeral=True)
 
     # ------------------------------------------------------------------ #
     #  Wavelink events
@@ -1119,9 +1349,13 @@ class Music(commands.Cog):
         # the UI flicker once per attempt, and treating it as a new track reset
         # the attempt budget so the track retried forever.
         self._positions.pop(player.guild.id, None)
-        is_retry, resume_ms = self._failures.on_start(
-            player.guild.id, self._track_key(payload.track)
-        )
+        key = self._track_key(payload.track)
+        self._played.setdefault(player.guild.id, deque(maxlen=RADIO_MEMORY)).append(key)
+        if not is_radio_pick(payload.track):
+            # Someone chose this track: when the queue runs out, radio follows
+            # it rather than the picks it made for an earlier one.
+            player.auto_queue.clear()
+        is_retry, resume_ms = self._failures.on_start(player.guild.id, key)
         logger.info(
             "%s %r in guild %s",
             "Retry started" if is_retry else "Now playing",
@@ -1168,17 +1402,31 @@ class Music(commands.Cog):
         # the panel. Left alone it advertises a finished track forever, with
         # buttons that can only answer "nothing is playing" - which is what
         # skipping the last track used to do.
-        if player.guild.id in self._stopping:
+        guild_id = player.guild.id
+        if guild_id in self._stopping:
             return  # /stop already tears the panel down
-        if payload.reason not in QUEUE_ENDING_REASONS:
+        if payload.reason == "loadFailed" and guild_id in self._radio_resume:
+            # A radio pick failed for good; the exception handler left the
+            # moving on to this end, as AutoPlay does for a queue.
+            self._radio_resume.discard(guild_id)
+        elif payload.reason not in QUEUE_ENDING_REASONS:
             # "loadFailed" means the track could not be played, and
             # on_wavelink_track_exception has already dealt with it: either a
             # retry is queued or the channel was told. "replaced" and "cleanup"
             # are not endings at all.
             return
-        if player.playing or not player.queue.is_empty or not player.auto_queue.is_empty:
+        if player.playing or not player.queue.is_empty:
             return
-        await self.retire_panel(player.guild.id, "🏁 Очередь закончилась")
+        if await self.radio_next(player, payload.track):
+            return
+        if self.radio_on(guild_id) and player.queue.mode is wavelink.QueueMode.normal:
+            await self.retire_panel(
+                guild_id,
+                "📻 Радио не нашло похожих треков",
+                note="Включите трек через `/play` — радио продолжит от него.",
+            )
+            return
+        await self.retire_panel(guild_id, "🏁 Очередь закончилась")
 
     async def _report_playback_problem(
         self, player: wavelink.Player | None, track: wavelink.Playable, text: str
@@ -1241,6 +1489,16 @@ class Music(commands.Cog):
         position = max(player.position, self._positions.pop(guild_id, 0))
         decision = self._failures.on_failure(guild_id, self._track_key(track), info, position)
         self._steer_autoplay(player, track, decision)
+        # Still synchronous: the end handler for this failure may run as soon
+        # as this listener first awaits, and must find the mark.
+        radio_continues = (
+            decision.verdict is Verdict.GIVE_UP
+            and guild_id in self._radio
+            and player.queue.is_empty
+            and player.queue.mode is wavelink.QueueMode.normal
+        )
+        if radio_continues:
+            self._radio_resume.add(guild_id)
 
         if decision.verdict is Verdict.RETRY:
             logger.info(
@@ -1284,7 +1542,7 @@ class Music(commands.Cog):
                 f"{reason}\nЭто уже несколько треков подряд, поэтому очередь "
                 "приостановлена. `/skip` — попробовать следующий трек."
             )
-        elif player.queue.is_empty:
+        elif player.queue.is_empty and not radio_continues:
             text = f"{reason} Попробуйте другую версию трека."
         else:
             text = f"{reason} Играю следующий трек."
@@ -1297,7 +1555,7 @@ class Music(commands.Cog):
                 "⏸️ Очередь приостановлена",
                 note="Несколько треков подряд не воспроизвелись. `/skip` — следующий.",
             )
-        elif player.queue.is_empty:
+        elif player.queue.is_empty and not radio_continues:
             await self.retire_panel(guild_id, f"⚠️ Не удалось воспроизвести «{plain(track.title)}»")
 
     def _steer_autoplay(

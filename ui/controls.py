@@ -28,7 +28,8 @@ from core.constants import MSG_BOT_NOT_CONNECTED, MSG_NEED_DJ, MSG_NOTHING_PLAYI
 from ui.v2 import PanelView, as_select, make_panel
 from utils.checks import bot_voice_refusal, user_is_dj
 from utils.formatting import format_ms
-from utils.player import player_of
+from utils.player import is_live, player_of
+from utils.radio import is_radio_pick
 
 if TYPE_CHECKING:
     from cogs.music import Music
@@ -43,6 +44,7 @@ CID_BACK = "np:back"
 CID_PLAY_PAUSE = "np:play_pause"
 CID_SKIP = "np:skip"
 CID_STOP = "np:stop"
+CID_RADIO = "np:radio"
 CID_SHUFFLE = "np:shuffle"
 CID_LOOP = "np:loop"
 CID_VOLUME_DOWN = "np:vol_down"
@@ -113,7 +115,7 @@ def track_key(track: wavelink.Playable) -> str:
 
 
 def _length(track: wavelink.Playable) -> str:
-    if track.is_stream:
+    if is_live(track):
         return "LIVE"
     return format_ms(track.length) if track.length else "?:??"
 
@@ -125,7 +127,7 @@ def _state_line(track: wavelink.Playable, player: wavelink.Player) -> str:
     stays truthful without the bot editing the message every second. A
     rendered "1:01 / 3:35" would be wrong a second after it was sent.
     """
-    if track.is_stream:
+    if is_live(track):
         return "🔴 **Прямой эфир**" + (" · ⏸️ на паузе" if player.paused else "")
     if player.paused:
         return f"⏸️ **На паузе** · {format_ms(player.position)} из {_length(track)}"
@@ -135,28 +137,36 @@ def _state_line(track: wavelink.Playable, player: wavelink.Player) -> str:
     return f"▶️ **Играет** · {_length(track)} · закончится <t:{ends_at}:R>"
 
 
-def _chips(player: wavelink.Player) -> str:
+def _chips(player: wavelink.Player, radio: bool) -> str:
     chips = [f"🔊 {player.volume}%"]
     if player.queue.mode is wavelink.QueueMode.loop:
         chips.append("🔂 повтор трека")
     elif player.queue.mode is wavelink.QueueMode.loop_all:
         chips.append("🔁 повтор очереди")
-    if player.autoplay == wavelink.AutoPlayMode.enabled:
-        chips.append("📻 автоплей")
+    if radio:
+        chips.append("📻 радио")
     return "-# " + " · ".join(chips)
 
 
-def _up_next(player: wavelink.Player) -> str:
+def _up_next(player: wavelink.Player, radio: bool) -> str:
     queue = player.queue
     if queue.is_empty:
-        if player.autoplay == wavelink.AutoPlayMode.enabled:
-            return "**Далее**\n-# Автоплей подберёт похожий трек."
-        return "**Далее**\n-# Очередь пуста — добавьте трек через `/play`."
+        if not radio:
+            return (
+                "**Далее**\n-# Очередь пуста — добавьте трек через `/play` или включите 📻 радио."
+            )
+        picks = list(player.auto_queue)[:UP_NEXT_PREVIEW]
+        if not picks:
+            return "**Далее**\n-# 📻 Радио подберёт похожий трек, когда этот закончится."
+        lines = ["**Далее** · 📻 радио"]
+        for index, track in enumerate(picks, 1):
+            lines.append(f"`{index}.` {plain(track.title)} · {_length(track)}")
+        return "\n".join(lines)
     lines = ["**Далее**"]
     for index, track in enumerate(list(queue)[:UP_NEXT_PREVIEW], 1):
         lines.append(f"`{index}.` {plain(track.title)} · {_length(track)}")
     rest = len(queue) - UP_NEXT_PREVIEW
-    total = sum(t.length for t in queue if not t.is_stream and t.length)
+    total = sum(t.length for t in queue if not is_live(t) and t.length)
     footer = []
     if rest > 0:
         footer.append(f"ещё {rest}")
@@ -236,10 +246,12 @@ class _Controls(ui.ActionRow["NowPlayingView"]):
 
 
 class TransportRow(_Controls):
-    """⏮ ⏯ ⏭ ⏹"""
+    """⏮ ⏯ ⏭ ⏹ 📻"""
 
-    def __init__(self, player: wavelink.Player | None = None) -> None:
+    def __init__(self, player: wavelink.Player | None = None, *, radio: bool = False) -> None:
         super().__init__()
+        if radio:
+            self.radio.style = discord.ButtonStyle.success
         idle = player is None or player.current is None
         self.back.disabled = idle
         self.play_pause.disabled = idle
@@ -294,6 +306,28 @@ class TransportRow(_Controls):
             return
         await interaction.response.defer()
         await self.view.cog.stop_player(player, by=interaction.user)
+
+    @ui.button(emoji="📻", style=discord.ButtonStyle.secondary, custom_id=CID_RADIO)
+    async def radio(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        if not await self._allowed(interaction):
+            return
+        player = await self._player(interaction)
+        if player is None or self.view is None or interaction.guild is None:
+            return
+        cog = self.view.cog
+        enabled = not cog.radio_on(interaction.guild.id)
+        if player.current is not None:
+            await cog.set_radio(player, enabled, interaction.user, redraw=False)
+            await self._redraw(interaction, player)
+            return
+        # Nothing playing (a panel from before a restart): starting radio
+        # looks tracks up first, which can outlast the three seconds Discord
+        # allows for an answer.
+        await interaction.response.defer()
+        told = await cog.set_radio(
+            player, enabled, interaction.user, channel_id=interaction.channel_id
+        )
+        await _whisper(interaction, told)
 
 
 class ModesRow(_Controls):
@@ -456,7 +490,9 @@ class NowPlayingView(PanelView):
         # The length lives in the state line below, next to the countdown.
         meta = [_SOURCE_NAMES.get(source, source.title() or "YouTube")]
         requester = requester_of(track)
-        if requester:
+        if is_radio_pick(track):
+            meta.append("📻 подобрало радио")
+        elif requester:
             meta.append(f"добавил {plain(requester)}")
         header = f"### {title}"
         if track.author:
@@ -470,11 +506,12 @@ class NowPlayingView(PanelView):
             )
         else:
             container.add_item(ui.TextDisplay(header))
-        container.add_item(ui.TextDisplay(f"{_state_line(track, player)}\n{_chips(player)}"))
+        radio = player.guild is not None and cog.radio_on(player.guild.id)
+        container.add_item(ui.TextDisplay(f"{_state_line(track, player)}\n{_chips(player, radio)}"))
         container.add_item(ui.Separator())
-        container.add_item(ui.TextDisplay(_up_next(player)))
+        container.add_item(ui.TextDisplay(_up_next(player, radio)))
         container.add_item(ui.Separator(visible=False))
-        container.add_item(TransportRow(player))
+        container.add_item(TransportRow(player, radio=radio))
         container.add_item(ModesRow(player))
         if not player.queue.is_empty:
             container.add_item(JumpRow(player))
@@ -509,7 +546,7 @@ def queue_view(player: wavelink.Player, *, page_size: int = 20) -> PanelView:
             lines.append(f"-# … и ещё {len(player.queue) - page_size}")
             break
         lines.append(f"`{index:>2}.` {plain(track.title)} · {_length(track)}")
-    total = sum(t.length for t in player.queue if not t.is_stream and t.length)
+    total = sum(t.length for t in player.queue if not is_live(t) and t.length)
     footer = [f"Треков в очереди: {len(player.queue)}"]
     if total:
         footer.append(f"общая длительность {format_ms(total)}")

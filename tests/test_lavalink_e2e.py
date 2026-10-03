@@ -244,3 +244,67 @@ class TestStreaming:
         assert status == 200 and isinstance(info, dict)
         names = {p["name"] for p in info["plugins"]}
         assert "youtube-plugin" in names
+
+
+# --------------------------------------------------------------------------- #
+#  Radio and the links that failed in production on 2026-10-03
+# --------------------------------------------------------------------------- #
+class TestRadioAgainstRealNode:
+    """The lookups radio makes (utils/radio.py), against live YouTube and Spotify."""
+
+    @staticmethod
+    def _tracks(payload: dict) -> list[dict]:
+        if payload["loadType"] == "playlist":
+            return payload["data"]["tracks"]
+        if payload["loadType"] == "search":
+            return payload["data"]
+        return []
+
+    def test_a_youtube_seed_gets_a_mix(self) -> None:
+        from utils.radio import mix_url
+
+        tracks = self._tracks(load(mix_url("dQw4w9WgXcQ")))
+        assert len(tracks) >= 10, "YouTube's mix is what radio plays from"
+
+    def test_spotify_recommendations_still_answer_nothing(self) -> None:
+        """Why radio does not use wavelink's own: its Spotify path is ``sprec:``.
+
+        If this starts failing, Spotify reopened recommendations.
+        """
+        payload = load("sprec:seed_tracks=65s1j8i5TSBsWEFjhlgewX&limit=10")
+        assert payload["loadType"] in {"empty", "error"}
+
+    def test_a_spotify_seed_is_found_on_youtube_and_mixed(self) -> None:
+        import wavelink
+
+        from utils.radio import mix_url, seed_search
+
+        spotify = load("https://open.spotify.com/track/65s1j8i5TSBsWEFjhlgewX")
+        if spotify["loadType"] != "track":
+            pytest.skip("Spotify is not configured on this node")
+        query = seed_search(wavelink.Playable(spotify["data"]))
+        assert query is not None
+        found = self._tracks(load(query))
+        assert found, f"YouTube found nothing for {query}"
+        mix = self._tracks(load(mix_url(found[0]["info"]["identifier"])))
+        assert len(mix) >= 10
+
+    def test_a_dead_playlist_link_still_plays_its_video(self) -> None:
+        """Four failed /play attempts in production, one per index in the link."""
+        from utils.links import youtube_video_only
+
+        link = "https://www.youtube.com/watch?v=XpqH6Ir-MYM&list=PLB2-YC0bPI3ub07ml901BmSJ87bYJMuTL"
+        assert load(link)["loadType"] == "error"
+        video = youtube_video_only(link)
+        assert video is not None
+        assert load(video)["loadType"] == "track"
+
+    def test_a_youtube_24_7_broadcast_counts_as_live(self) -> None:
+        import wavelink
+
+        from utils.player import is_live
+
+        payload = load("https://www.youtube.com/watch?v=jfKfPfyJRdk")
+        if payload["loadType"] != "track":
+            pytest.skip("the broadcast is not on air")
+        assert is_live(wavelink.Playable(payload["data"]))

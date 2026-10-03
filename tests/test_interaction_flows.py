@@ -87,7 +87,7 @@ def press(view, label: str, guild, channel, member, *, values=None):
 #  Inventory: nothing may be added without a test noticing
 # --------------------------------------------------------------------------- #
 EXPECTED_COMPONENTS = {
-    "NowPlayingView": ["⏮️", "⏸️", "⏭️", "⏹️", "🔀", "🔁", "🔉", "🔊", "📜", "<select>"],
+    "NowPlayingView": ["⏮️", "⏸️", "⏭️", "⏹️", "📻", "🔀", "🔁", "🔉", "🔊", "📜", "<select>"],
     "RulesPanel": ["Команды бота", "Связаться с администрацией", "Согласен с правилами"],
     "TicketControls": ["Взять в работу", "Закрыть тикет"],
     "GigaBuilderView": [

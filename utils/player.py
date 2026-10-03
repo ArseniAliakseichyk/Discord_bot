@@ -21,6 +21,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("bot.player")
 
+#: Longer than anything YouTube lets anyone upload (12 hours), so a track this
+#: long is a live broadcast whatever its ``isStream`` flag says.
+LIVE_LENGTH_MS = 24 * 60 * 60 * 1000
+
+
+def is_live(track: wavelink.Playable) -> bool:
+    """A live stream, including YouTube's that arrive disguised as tracks.
+
+    The YouTube source reports some 24/7 broadcasts ("lofi hip hop radio")
+    with ``isStream`` false and the time since the broadcast began as the
+    length - 121 601 512 s, about four years, measured on 2026-10-03. Taken
+    at face value the track was refused as too long and the panel counted
+    down to its "end" in four years.
+    """
+    return bool(track.is_stream) or (track.length or 0) >= LIVE_LENGTH_MS
+
 
 def player_of(guild: discord.Guild | None) -> wavelink.Player | None:
     """Return the guild's wavelink player, or ``None`` if not connected."""

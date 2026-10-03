@@ -79,7 +79,9 @@ class Settings(BaseSettings):
 
     # --- Music ---
     music_folder: str = Field(default="./music", alias="MUSIC_FOLDER")
-    max_track_length: int = Field(default=1200, alias="MAX_TRACK_LENGTH")  # seconds
+    # Seconds; 0 (the default) means no limit. A limit refused the long mixes
+    # people put on as background music, which is most of what they play.
+    max_track_length: int = Field(default=0, alias="MAX_TRACK_LENGTH")
     max_playlist_tracks: int = Field(default=100, alias="MAX_PLAYLIST_TRACKS")
     default_volume: int = Field(default=100, alias="DEFAULT_VOLUME")  # 0..200
     inactive_timeout: int = Field(default=300, alias="INACTIVE_TIMEOUT")  # seconds

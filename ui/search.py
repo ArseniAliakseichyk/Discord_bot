@@ -16,6 +16,7 @@ from discord import ui
 from core.constants import MSG_JOIN_VOICE_FIRST, SEARCH_TIMEOUT, SELECT_LABEL_LIMIT
 from ui.v2 import PanelView, as_select, make_panel
 from utils.formatting import format_ms
+from utils.player import is_live
 
 if TYPE_CHECKING:
     from cogs.music import Music
@@ -30,9 +31,9 @@ class SearchRow(ui.ActionRow["SearchView"]):
                 label=track.title[:SELECT_LABEL_LIMIT],
                 value=str(index),
                 description=(
-                    f"{track.author} • {'LIVE' if track.is_stream else format_ms(track.length)}"
+                    f"{track.author} • {'LIVE' if is_live(track) else format_ms(track.length)}"
                     if track.author
-                    else ("LIVE" if track.is_stream else format_ms(track.length))
+                    else ("LIVE" if is_live(track) else format_ms(track.length))
                 )[:SELECT_LABEL_LIMIT],
             )
             for index, track in enumerate(tracks)
