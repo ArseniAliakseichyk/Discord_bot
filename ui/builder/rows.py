@@ -104,7 +104,7 @@ class FieldRow(ui.ActionRow["GigaBuilderView"]):
             return
         await send_panel(interaction, FieldPickerView(builder), ephemeral=True)
 
-    @ui.button(label="Порядок полей", emoji="⇅", style=discord.ButtonStyle.secondary)
+    @ui.button(label="Порядок полей", emoji="↕️", style=discord.ButtonStyle.secondary)
     async def reorder(self, interaction: discord.Interaction, _: ui.Button) -> None:
         builder = builder_of(self)
         if builder.state.field_count < 2:

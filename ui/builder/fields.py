@@ -136,7 +136,7 @@ class ReorderFieldsView(PanelView):
         self.before: int | None = None
         self.add_item(
             make_panel(
-                title="⇅ Порядок полей",
+                title="↕️ Порядок полей",
                 body="Выберите поле и позицию, перед которой его поставить.",
             )
         )
