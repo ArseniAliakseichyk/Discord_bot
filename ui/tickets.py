@@ -18,7 +18,8 @@ from typing import Protocol, runtime_checkable
 import discord
 from discord import ui
 
-from ui.v2 import PanelView, make_panel
+from core.constants import V2_TEXT_LIMIT
+from ui.v2 import PanelView, make_panel, split_text
 
 logger = logging.getLogger("bot.tickets")
 
@@ -41,30 +42,48 @@ TICKET_CATEGORIES: tuple[tuple[str, str, str], ...] = (
 CATEGORY_LABELS = {value: label for value, label, _ in TICKET_CATEGORIES}
 
 #: Shown when a guild has not set its own text via ``/ticket config rules``.
-DEFAULT_RULES = """# 🦩 Добро пожаловать
+#: The server's own rules from before the rewrite, word for word: the rewrite
+#: had cut them down to a generic summary, losing the hierarchy section, the
+#: bot-channel rule and the tone the server wrote them in. Changed: the typo
+#: "аппеляцию", and the closing call to action, which moved to RULES_FOOTER
+#: below a separator (the embed faked that line with underscores).
+DEFAULT_RULES = """# 🦩 Welcome to Гача 🦩
 
 > Мы здесь, чтобы получать удовольствие, играть и отдыхать.
-> Мы — **взрослое** комьюнити (__18+__).
+> Мы – **взрослое** комьюнити (__18+__).
 
-> ### ✅ Ознакомься с правилами ниже и жми «Согласен», чтобы войти.
-> 📨 Возникли проблемы? Жми «Связаться с администрацией».
+> ### ✅ Ознакомься с правилами ниже и жми **«Согласен»**, чтобы войти.
+> 📨 Возникли проблемы? Жми **«Связаться с администрацией»**.
 
-## 🏛️ Три столпа
+## 🏛️ Наши Три Столпа
 ### Это __нерушимые__ правила. Нарушение = бан.
-1. **АДЕКВАТНОСТЬ:** мы 18+. Веди себя как взрослый — без нытья, токсичности и \
-детских истерик. Юмор, в том числе чёрный, мы понимаем.
-2. **УВАЖЕНИЕ:** оскорбление семьи или переход на личности — *мгновенный бан*. \
-Политические дебаты допустимы, но без грязи.
-3. **ЧЕСТНОСТЬ:** `скама — нет.` Фишинг, вирусы, попытки кражи аккаунтов — \
-перманентный бан без апелляции.
+1.  **АДЕКВАТНОСТЬ:** Мы 18+. Веди себя как взрослый. Без нытья, токсичности и \
+детских истерик. (Разумеется, мы понимаем, что такое юмор. И даже черный 🥰)
+2.  **УВАЖЕНИЕ:** Оскорбление семьи или переход на личности = *мгновенный бан* \
+(Если ваш оппонент не против, то вперед). Политические дебаты – окей, но без грязи.
+3.  **ЧЕСТНОСТЬ:** `Скама – нет.` Фишинг, вирусы, попытки кражи аккаунтов – это \
+перманентный бан. Без шансов на апелляцию. Я не шучу. Реально сразу в бан 😇.
 
 ## 🗣️ Голос vs. ⌨️ Текст
-* **В голосе:** ты *почти* свободен, пока это не нарушает три столпа.
-* **В тексте:** __строгая модерация.__ Никакого спама и флуда.
+* **В Голосе:** Ты *почти* свободен. Трэш-ток, шутки, «performance» – всё можно, \
+пока это не нарушает Три Столпа.
+* **В Тексте:** __Строгая модерация.__ Никакого спама или флуда. Все команды ботов – \
+в `канале - 🎧bot`.
 
-## 🎙️ Твой сетап
-* **Микрофон обязателен.** Мы играем в команде.
+## 👑 Иерархия Гачи
+> **Администрация** (`🤍Император🤍`, `⚔️Лорды🛡️`) – это закон. Не спорь в общем чате, \
+для этого есть тикеты.
+> **Продвижение:** Начинаешь как `Гражданин`. Проявляй активность, вливайся в комьюнити \
+и со временем сможешь получить __кастомную роль__, а может и модерку, кто знает 🤭.
+
+## 🎙️ Твой Сетап
+* **Микрофон – обязателен.** Мы играем в команде. Никто не хочет слушать твой \
+перфоратор или эхо из 2005-го.
+* *Рекомендуем: `HyperX Cloud` или `SteelSeries Arctis`.*
 """
+
+#: The call to action under the rules, above the buttons.
+RULES_FOOTER = "### Жми   `✅ Согласен`   и погнали!"
 
 
 def _support_role(guild: discord.Guild, support_role_id: int | None) -> discord.Role | None:
@@ -202,8 +221,21 @@ class RulesActions(ui.ActionRow["RulesPanel"]):
         await view.cog.show_help(interaction)
 
 
+def _split_heading(text: str) -> tuple[str, str]:
+    """The opening of the rules (up to the first ``##`` section) and the rest."""
+    lines = text.strip().splitlines()
+    for index, line in enumerate(lines[1:], 1):
+        if line.startswith("## "):
+            return "\n".join(lines[:index]).strip(), "\n".join(lines[index:]).strip()
+    return text.strip(), ""
+
+
 class RulesPanel(PanelView):
-    """The message new members land on: rules, verification, support, help."""
+    """The message new members land on: rules, verification, support, help.
+
+    Laid out as the embed it replaced: the server icon small beside the
+    welcome, the rules below it, the call to action and the buttons last.
+    """
 
     def __init__(
         self,
@@ -214,13 +246,19 @@ class RulesPanel(PanelView):
     ) -> None:
         super().__init__(timeout=None)
         self.cog = cog
-        container = make_panel(
-            body=rules_text or DEFAULT_RULES,
-            accent=PANEL_COLOR,
-        )
+        head, rest = _split_heading(rules_text or DEFAULT_RULES)
+        container: ui.Container[RulesPanel] = ui.Container(accent_colour=PANEL_COLOR)
         if icon_url:
-            container.add_item(ui.MediaGallery(discord.MediaGalleryItem(icon_url)))
+            container.add_item(ui.Section(ui.TextDisplay(head), accessory=ui.Thumbnail(icon_url)))
+        else:
+            container.add_item(ui.TextDisplay(head))
+        budget = max(1, V2_TEXT_LIMIT - len(head) - len(RULES_FOOTER))
+        for chunk in split_text(rest, budget, total=budget) if rest else []:
+            container.add_item(ui.TextDisplay(chunk))
         container.add_item(ui.Separator())
+        if rules_text is None:
+            # A guild's own text ends however it likes; the default ends here.
+            container.add_item(ui.TextDisplay(RULES_FOOTER))
         container.add_item(RulesActions())
         self.add_item(container)
 
